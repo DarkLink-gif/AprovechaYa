@@ -104,6 +104,10 @@
           <i class="fa-solid fa-circle-info text-base"></i>
           <span>Cómo funciona</span>
         </button>
+        <button id="desk-tab-profile" onclick="switchTab('profile')" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-all">
+          <i class="fa-solid fa-user text-base"></i>
+          <span>Mi Perfil</span>
+        </button>
       </nav>
     </div>
 
@@ -148,6 +152,9 @@
       </button>
       <button id="mob-tab-info" onclick="switchTab('info')" class="flex-1 py-2.5 text-xs font-bold rounded-xl text-slate-500 transition-all">
         <i class="fa-solid fa-circle-info mr-1"></i> Info
+      </button>
+      <button id="mob-tab-profile" onclick="switchTab('profile')" class="flex-1 py-2.5 text-xs font-bold rounded-xl text-slate-500 transition-all">
+        <i class="fa-solid fa-user mr-1"></i> Perfil
       </button>
     </div>
 
@@ -201,6 +208,11 @@
     <button onclick="switchTab('info')" class="flex flex-col items-center gap-1 text-slate-400 hover:text-slate-700">
       <i class="fa-solid fa-circle-info text-lg"></i>
       <span class="text-[10px] font-bold">Info</span>
+    </button>
+
+    <button onclick="switchTab('profile')" class="flex flex-col items-center gap-1 text-slate-400 hover:text-slate-700">
+      <i class="fa-solid fa-user text-lg"></i>
+      <span class="text-[10px] font-bold">Perfil</span>
     </button>
   </nav>
 
@@ -288,10 +300,13 @@
       <h3 class="text-lg font-extrabold text-slate-900 mb-1">Publicar Oferta</h3>
       <p class="text-xs font-medium text-slate-400 mb-6">Completa la información o sube una imagen.</p>
 
-      <div id="image-preview-box" class="border-2 border-dashed border-slate-200 rounded-2xl p-5 bg-slate-50 hover:bg-slate-100/80 transition relative mb-4">
-        <input type="file" id="file-input" accept="image/*" capture="environment" multiple class="hidden" onchange="handleProductImageSelect(event)">
+      <div id="image-preview-box" class="border-2 border-dashed border-slate-200 rounded-2xl p-5 bg-slate-50 hover:bg-slate-100/80 transition relative mb-4 cursor-pointer">
+        <!-- File input covers entire area when no images -->
+        <label for="file-input" class="absolute inset-0 cursor-pointer" style="z-index: 10;">
+          <input type="file" id="file-input" accept="image/*" capture="environment" multiple class="hidden" onchange="handleProductImageSelect(event)">
+        </label>
         
-        <div id="preview-placeholder" class="space-y-2">
+        <div id="preview-placeholder" class="space-y-2 relative z-5">
           <div class="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 mx-auto flex items-center justify-center text-lg">
             <i class="fa-solid fa-camera"></i>
           </div>
@@ -299,12 +314,12 @@
           <p class="text-[11px] text-slate-400">Selecciona o toma fotos, luego pulsa Analizar</p>
         </div>
         
-        <div id="preview-grid" class="hidden grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
+        <div id="preview-grid" class="hidden grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 relative z-5">
           <!-- Previews se insertan aquí dinámicamente -->
         </div>
         
         <!-- Botones de acción para imágenes -->
-        <div id="image-actions" class="hidden mt-3 flex flex-col sm:flex-row gap-2">
+        <div id="image-actions" class="hidden mt-3 flex flex-col sm:flex-row gap-2 relative z-5">
           <button type="button" onclick="analyzeProductImages()" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl transition flex items-center justify-center gap-2">
             <i class="fa-solid fa-brain"></i>
             <span>Analizar con IA</span>
@@ -692,17 +707,20 @@
 
         if (data.user) {
           console.log('Creando perfil para usuario:', data.user.id, 'avatarUrl:', avatarUrl);
-          const { error: profError } = await supabaseClient.from('profiles').insert([{
+          // Use upsert to handle both insert and update cases
+          const { error: profError } = await supabaseClient.from('profiles').upsert([{
             id: data.user.id,
             full_name: fullName,
             role: role,
             avatar_url: avatarUrl
-          }]);
+          }]).select().single();
           if (profError) {
             console.error("Error al guardar perfil:", profError);
             showToast("Error guardando perfil: " + profError.message, 'bg-red-600');
           } else {
-            console.log('Perfil creado exitosamente');
+            console.log('Perfil creado/actualizado exitosamente');
+            // Force refresh the profile after successful insert
+            await fetchUserProfile(data.user.id);
           }
         }
 
@@ -1322,6 +1340,212 @@
       }
     }
 
+    function renderProfileTab() {
+      const grid = document.getElementById('products-grid');
+      grid.innerHTML = '';
+      document.getElementById('product-count').textContent = '';
+
+      if (!currentUserProfile) {
+        grid.innerHTML = `
+          <div class="col-span-full bg-white border border-slate-200 rounded-3xl p-8 text-center space-y-4">
+            <div class="w-20 h-20 rounded-full bg-slate-100 text-slate-400 mx-auto flex items-center justify-center text-3xl">
+              <i class="fa-solid fa-user-lock"></i>
+            </div>
+            <h3 class="text-lg font-bold text-slate-800">Inicia sesión para ver tu perfil</h3>
+            <p class="text-sm text-slate-500">Tu impacto, datos y configuración aparecerán aquí</p>
+            <button onclick="openModal('auth-modal')" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-6 rounded-xl transition">Iniciar Sesión</button>
+          </div>
+        `;
+        return;
+      }
+
+      // Cargar stats de impacto
+      loadUserImpactStats();
+
+      const avatar = currentUserProfile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentUserProfile.full_name)}&background=0D9488&color=fff`;
+      const roleLabels = { consumer: 'Consumidor', merchant: 'Comercio', charity: 'Institución Benéfica' };
+
+      grid.innerHTML = `
+        <div class="col-span-full space-y-6">
+          <!-- Header del perfil -->
+          <div class="bg-gradient-to-br from-emerald-600 to-teal-600 text-white rounded-3xl p-6 md:p-8">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
+              <div class="flex items-center gap-4">
+                <img src="${avatar}" class="w-20 h-20 rounded-full object-cover border-4 border-white/30" alt="${currentUserProfile.full_name}">
+                <div>
+                  <h3 class="text-xl md:text-2xl font-extrabold">${currentUserProfile.full_name}</h3>
+                  <p class="text-emerald-100 flex items-center gap-2">
+                    <span class="bg-white/20 px-3 py-1 rounded-full text-xs font-bold">${roleLabels[currentUserProfile.role] || currentUserProfile.role}</span>
+                  </p>
+                </div>
+              </div>
+              <div class="text-right">
+                <p class="text-emerald-100 text-sm">Miembro desde</p>
+                <p class="font-bold">${new Date(currentUserProfile.created_at).toLocaleDateString('es-ES', { year: 'numeric', month: 'long' })}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stats de impacto -->
+          <div class="grid grid-cols-3 gap-4">
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center hover:border-emerald-300 transition">
+              <div class="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-600 mx-auto mb-3 flex items-center justify-center">
+                <i class="fa-solid fa-seedling text-xl"></i>
+              </div>
+              <p class="text-2xl font-extrabold text-emerald-600" id="stat-food">0 kg</p>
+              <p class="text-xs text-slate-500">Alimentos salvados</p>
+            </div>
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center hover:border-amber-300 transition">
+              <div class="w-12 h-12 rounded-xl bg-amber-100 text-amber-600 mx-auto mb-3 flex items-center justify-center">
+                <i class="fa-solid fa-coins text-xl"></i>
+              </div>
+              <p class="text-2xl font-extrabold text-amber-600" id="stat-money">$0</p>
+              <p class="text-xs text-slate-500">Dinero ahorrado</p>
+            </div>
+            <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center hover:border-sky-300 transition">
+              <div class="w-12 h-12 rounded-xl bg-sky-100 text-sky-600 mx-auto mb-3 flex items-center justify-center">
+                <i class="fa-solid fa-leaf text-xl"></i>
+              </div>
+              <p class="text-2xl font-extrabold text-sky-600" id="stat-co2">0 kg</p>
+              <p class="text-xs text-slate-500">CO₂ evitado</p>
+            </div>
+          </div>
+
+          <!-- Mis reservas/compras -->
+          <div class="space-y-4">
+            <h4 class="text-sm font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+              <i class="fa-solid fa-history text-emerald-600"></i> Historial de Reservas
+            </h4>
+            <div id="profile-reservations" class="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div class="p-4 text-center text-slate-500">
+                <i class="fa-solid fa-spinner fa-spin text-emerald-600 text-xl"></i>
+                <p class="mt-2">Cargando historial...</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Configuración -->
+          <div class="space-y-4">
+            <h4 class="text-sm font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+              <i class="fa-solid fa-gear text-emerald-600"></i> Configuración
+            </h4>
+            <div class="bg-white border border-slate-200 rounded-2xl p-4 space-y-4">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-medium text-slate-800">Cambiar foto de perfil</p>
+                  <p class="text-sm text-slate-500">Actualiza tu avatar</p>
+                </div>
+                <label class="cursor-pointer">
+                  <input type="file" id="profile-avatar-file" accept="image/*" class="hidden" onchange="handleProfileAvatarSelect(event)">
+                  <button type="button" onclick="document.getElementById('profile-avatar-file').click()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2 px-4 rounded-xl text-sm transition">Subir foto</button>
+                </label>
+              </div>
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-medium text-slate-800">Cerrar sesión</p>
+                  <p class="text-sm text-slate-500">Finalizar sesión actual</p>
+                </div>
+                <button onclick="handleLogout()" class="bg-red-50 hover:bg-red-100 text-red-600 font-bold py-2 px-4 rounded-xl text-sm transition">Cerrar sesión</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      // Cargar stats y reservas
+      loadUserImpactStats();
+      loadUserReservations();
+    }
+
+    async function loadUserReservations() {
+      try {
+        if (!initSupabaseClient()) return;
+        
+        const { data, error } = await supabaseClient.from('products')
+          .select('*')
+          .eq('reserved_by', currentUserProfile.id)
+          .in('status', ['RESERVED', 'SOLD'])
+          .order('created_at', { ascending: false });
+        
+        const container = document.getElementById('profile-reservations');
+        if (!container) return;
+
+        if (error) throw error;
+
+        if (!data || data.length === 0) {
+          container.innerHTML = `
+            <div class="p-8 text-center text-slate-500">
+              <i class="fa-solid fa-receipt text-3xl text-slate-300 mb-2"></i>
+              <p>No tienes reservas aún</p>
+              <p class="text-sm">Cuando reserves una oferta aparecerá aquí</p>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = data.map(p => `
+          <div class="p-4 border-t border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div class="flex items-center gap-3">
+              <img src="${p.image_url || 'https://via.placeholder.com/60'}" class="w-14 h-14 rounded-xl object-cover">
+              <div>
+                <p class="font-bold text-slate-800">${p.title}</p>
+                <p class="text-sm text-slate-500">${p.location_name}</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-4 text-sm">
+              <span class="font-bold text-emerald-600">${p.is_donation ? 'Donación' : '$' + Number(p.discount_price).toFixed(2)}</span>
+              <span class="px-2 py-1 rounded-full text-xs font-bold ${p.status === 'SOLD' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}">
+                ${p.status === 'SOLD' ? 'Recogido' : 'Reservado'}
+              </span>
+              <span class="text-slate-500">${new Date(p.created_at).toLocaleDateString('es-ES')}</span>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        console.warn('No se pudieron cargar reservas:', e);
+        const container = document.getElementById('profile-reservations');
+        if (container) {
+          container.innerHTML = `
+            <div class="p-8 text-center text-red-500">
+              <i class="fa-solid fa-triangle-exclamation text-2xl mb-2"></i>
+              <p>Error cargando reservas</p>
+            </div>
+          `;
+        }
+      }
+    }
+
+    async function handleProfileAvatarSelect(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      if (!initSupabaseClient()) {
+        showToast("Error de configuración", "bg-red-600");
+        return;
+      }
+
+      showLoading("Subiendo foto...");
+      try {
+        const avatarUrl = await uploadAvatarToStorage(file, currentUserProfile.id);
+        if (!avatarUrl) throw new Error("Error subiendo avatar");
+
+        const { error } = await supabaseClient.from('profiles')
+          .update({ avatar_url: avatarUrl })
+          .eq('id', currentUserProfile.id);
+
+        if (error) throw error;
+
+        currentUserProfile.avatar_url = avatarUrl;
+        renderAuthUI(currentUserProfile);
+        renderProfileTab();
+        showToast("Foto de perfil actualizada", "bg-emerald-600");
+      } catch (err) {
+        showToast("Error: " + err.message, "bg-red-600");
+      } finally {
+        hideLoading();
+      }
+    }
+
     function renderProducts() {
       const grid = document.getElementById('products-grid');
       grid.innerHTML = '';
@@ -1474,10 +1698,12 @@
       document.getElementById('desk-tab-explore').className = tab === 'explore' ? "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm bg-emerald-50 text-emerald-700 transition-all" : "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm text-slate-500 hover:bg-slate-50 transition-all";
       document.getElementById('desk-tab-mine').className = tab === 'mine' ? "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm bg-emerald-50 text-emerald-700 transition-all" : "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm text-slate-500 hover:bg-slate-50 transition-all";
       document.getElementById('desk-tab-info').className = tab === 'info' ? "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm bg-emerald-50 text-emerald-700 transition-all" : "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm text-slate-500 hover:bg-slate-50 transition-all";
+      document.getElementById('desk-tab-profile').className = tab === 'profile' ? "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-bold text-sm bg-emerald-50 text-emerald-700 transition-all" : "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold text-sm text-slate-500 hover:bg-slate-50 transition-all";
 
       document.getElementById('mob-tab-explore').className = tab === 'explore' ? "flex-1 py-2.5 text-xs font-bold rounded-xl text-emerald-700 bg-emerald-50 transition-all" : "flex-1 py-2.5 text-xs font-bold rounded-xl text-slate-500 transition-all";
       document.getElementById('mob-tab-mine').className = tab === 'mine' ? "flex-1 py-2.5 text-xs font-bold rounded-xl text-emerald-700 bg-emerald-50 transition-all" : "flex-1 py-2.5 text-xs font-bold rounded-xl text-slate-500 transition-all";
       document.getElementById('mob-tab-info').className = tab === 'info' ? "flex-1 py-2.5 text-xs font-bold rounded-xl text-emerald-700 bg-emerald-50 transition-all" : "flex-1 py-2.5 text-xs font-bold rounded-xl text-slate-500 transition-all";
+      document.getElementById('mob-tab-profile').className = tab === 'profile' ? "flex-1 py-2.5 text-xs font-bold rounded-xl text-emerald-700 bg-emerald-50 transition-all" : "flex-1 py-2.5 text-xs font-bold rounded-xl text-slate-500 transition-all";
 
       // Bottom nav mobile
       const bottomNavButtons = document.querySelectorAll('nav.fixed.bottom-0 button[onclick^="switchTab"]');
@@ -1501,6 +1727,9 @@
       } else if (tab === 'info') {
         document.getElementById('section-title').textContent = "Cómo funciona AprovechaYa";
         document.getElementById('section-subtitle').textContent = "Conoce cómo usar la plataforma";
+      } else if (tab === 'profile') {
+        document.getElementById('section-title').textContent = "Mi Perfil";
+        document.getElementById('section-subtitle').textContent = "Tu impacto e información personal";
       }
       
       // Reset filtro al cambiar tab
@@ -1511,6 +1740,8 @@
       
       if (tab === 'info') {
         renderInfoTab();
+      } else if (tab === 'profile') {
+        renderProfileTab();
       } else {
         renderProducts();
       }
