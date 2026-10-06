@@ -849,6 +849,19 @@
       });
     }
 
+    // Convert base64 data URL to Blob for Storage upload
+    function base64ToBlob(base64) {
+      const parts = base64.split(',');
+      const mimeType = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+      const byteString = atob(parts[1]);
+      const arrayBuffer = new ArrayBuffer(byteString.length);
+      const uint8Array = new Uint8Array(arrayBuffer);
+      for (let i = 0; i < byteString.length; i++) {
+        uint8Array[i] = byteString.charCodeAt(i);
+      }
+      return new Blob([uint8Array], { type: mimeType });
+    }
+
     // Retry helper with exponential backoff
     async function invokeWithRetry(functionName, body, maxRetries = 3) {
       let lastError = null;
@@ -1134,27 +1147,52 @@
       // Guardar packaging_condition y packaging_type en hidden inputs cuando la IA lo devuelve
       const packagingCondition = document.getElementById('p-packaging-condition')?.value || 'NO ESPECIFICADO';
       const packagingType = document.getElementById('p-packaging-type')?.value || 'EMPAQUETADO';
-      
-      const newProduct = {
-        user_id: currentUserProfile.id,
-        title: document.getElementById('p-title').value,
-        original_price: originalPrice,
-        discount_price: discountPrice,
-        urgency: document.getElementById('p-urgency').value,
-        expiration_hours: parseInt(document.getElementById('p-expiration-hours').value) || 12,
-        urgency_tag: document.getElementById('p-urgency-tag').value || 'HOY',
-        is_donation: document.getElementById('p-is-donation').checked,
-        location_name: document.getElementById('p-location-name').value,
-        lat: parseFloat(document.getElementById('p-lat').value) || null,
-        lng: parseFloat(document.getElementById('p-lng').value) || null,
-        image_url: compressedProductImages[0] || currentBase64ProductImage || "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=500&q=80",
-        packaging_condition: packagingCondition,
-        packaging_type: packagingType,
-        status: 'AVAILABLE'
-      };
 
-      showLoading("Guardando en la base de datos...");
+      showLoading("Subiendo imágenes y guardando oferta...");
       try {
+        // Subir imágenes a Supabase Storage
+        const imageUrls: string[] = [];
+        for (let i = 0; i < compressedProductImages.length; i++) {
+          const base64 = compressedProductImages[i];
+          // Convertir base64 a blob
+          const blob = base64ToBlob(base64);
+          const mimeType = blob.type || 'image/jpeg';
+          const fileExt = mimeType.split('/')[1] || 'jpg';
+          const fileName = `${currentUserProfile.id}/${Date.now()}-${i}.${fileExt}`;
+          
+          const { error: uploadError } = await supabaseClient.storage
+            .from('product-images')
+            .upload(fileName, blob, { cacheControl: '3600', upsert: true });
+          
+          if (uploadError) throw uploadError;
+          
+          const { data: { publicUrl } } = supabaseClient.storage
+            .from('product-images')
+            .getPublicUrl(fileName);
+          
+          imageUrls.push(publicUrl);
+        }
+
+        const newProduct = {
+          user_id: currentUserProfile.id,
+          title: document.getElementById('p-title').value,
+          original_price: originalPrice,
+          discount_price: discountPrice,
+          urgency: document.getElementById('p-urgency').value,
+          expiration_hours: parseInt(document.getElementById('p-expiration-hours').value) || 12,
+          urgency_tag: document.getElementById('p-urgency-tag').value || 'HOY',
+          is_donation: document.getElementById('p-is-donation').checked,
+          location_name: document.getElementById('p-location-name').value,
+          lat: parseFloat(document.getElementById('p-lat').value) || null,
+          lng: parseFloat(document.getElementById('p-lng').value) || null,
+          image_urls: imageUrls.length > 0 ? imageUrls : ["https://images.unsplash.com/photo-1509440159596-0249088772ff?w=500&q=80"],
+          image_url: imageUrls.length > 0 ? imageUrls[0] : "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=500&q=80", // compatibilidad
+          packaging_condition: packagingCondition,
+          packaging_type: packagingType,
+          status: 'AVAILABLE'
+        };
+
+        showLoading("Guardando en la base de datos...");
         const { error } = await supabaseClient.from('products').insert([newProduct]);
         if (error) throw error;
 
