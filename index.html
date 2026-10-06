@@ -1152,7 +1152,7 @@
       showLoading("Subiendo imágenes y guardando oferta...");
       try {
         // Subir imágenes a Supabase Storage
-        const imageUrls: string[] = [];
+        const imageUrls = [];
         for (let i = 0; i < compressedProductImages.length; i++) {
           const base64 = compressedProductImages[i];
           // Convertir base64 a blob
