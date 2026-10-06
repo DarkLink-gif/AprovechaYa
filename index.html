@@ -804,16 +804,14 @@
       
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 30000);
+          // Timeout wrapper using Promise.race (supabase-js doesn't support AbortSignal in functions.invoke)
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout: La IA tardó demasiado en responder')), 30000)
+          );
           
-          const result = await supabaseClient.functions.invoke(functionName, {
-            body,
-            // Note: supabase-js doesn't directly support AbortSignal in functions.invoke
-            // but we can use a timeout wrapper
-          });
+          const invokePromise = supabaseClient.functions.invoke(functionName, { body });
           
-          clearTimeout(timeoutId);
+          const result = await Promise.race([invokePromise, timeoutPromise]);
           
           if (result.error) {
             throw new Error(JSON.stringify(result.error));
@@ -1913,7 +1911,6 @@
 
     function resetProductForm() {
       document.getElementById('product-form').reset();
-      document.getElementById('preview-img').classList.add('hidden');
       document.getElementById('preview-placeholder').classList.remove('hidden');
       document.getElementById('preview-grid').classList.add('hidden');
       document.getElementById('preview-grid').innerHTML = '';
