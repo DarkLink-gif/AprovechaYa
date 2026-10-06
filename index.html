@@ -301,7 +301,7 @@
       <p class="text-xs font-medium text-slate-400 mb-6">Completa la información o sube una imagen.</p>
 
       <div id="image-preview-box" class="border-2 border-dashed border-slate-200 rounded-2xl p-5 bg-slate-50 hover:bg-slate-100/80 transition relative mb-4 cursor-pointer">
-        <!-- File input covers entire area when no images -->
+        <!-- File input covers placeholder area only -->
         <label for="file-input" class="absolute inset-0 cursor-pointer" style="z-index: 10;">
           <input type="file" id="file-input" accept="image/*" capture="environment" multiple class="hidden" onchange="handleProductImageSelect(event)">
         </label>
@@ -318,8 +318,8 @@
           <!-- Previews se insertan aquí dinámicamente -->
         </div>
         
-        <!-- Botones de acción para imágenes -->
-        <div id="image-actions" class="hidden mt-3 flex flex-col sm:flex-row gap-2 relative z-5">
+        <!-- Botones de acción para imágenes - FUERA del label -->
+        <div id="image-actions" class="hidden mt-3 flex flex-col sm:flex-row gap-2 relative z-20">
           <button type="button" onclick="analyzeProductImages()" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl transition flex items-center justify-center gap-2">
             <i class="fa-solid fa-brain"></i>
             <span>Analizar con IA</span>
@@ -465,12 +465,36 @@
           showToast("¡Pago completado con éxito! Tu reserva está lista.", "bg-emerald-600");
         }
 
-        // NO actualizar BD aquí: 
-        // - Donaciones: Edge Function ya lo hizo
-        // - Pagos Stripe: Webhook oficial debe confirmar (security)
-        // Solo refrescamos UI
+        // Wait a bit for webhook to process, then refresh
         window.history.replaceState({}, document.title, window.location.pathname);
-        await loadProducts();
+        
+        // Poll for product status change (webhook might take a moment)
+        let attempts = 0;
+        const maxAttempts = 10;
+        const pollInterval = 1000;
+        
+        const pollForStatus = async () => {
+          if (attempts >= maxAttempts) {
+            await loadProducts();
+            return;
+          }
+          
+          try {
+            if (!initSupabaseClient()) { await loadProducts(); return; }
+            const { data } = await supabaseClient.from('products').select('status').eq('id', productId).single();
+            if (data && (data.status === 'RESERVED' || data.status === 'SOLD')) {
+              await loadProducts();
+            } else {
+              attempts++;
+              setTimeout(pollForStatus, pollInterval);
+            }
+          } catch {
+            attempts++;
+            setTimeout(pollForStatus, pollInterval);
+          }
+        };
+        
+        await pollForStatus();
       } else if (status === 'cancelled') {
         showToast("El proceso de pago fue cancelado.", "bg-amber-600");
         window.history.replaceState({}, document.title, window.location.pathname);
@@ -658,8 +682,9 @@
       
       try {
         const fileExt = file.name.split('.').pop();
-        const fileName = `${userId}-${Date.now()}.${fileExt}`;
-        const filePath = `avatars/${fileName}`;
+        const fileName = `${Date.now()}.${fileExt}`;
+        // Path must be userId/filename for RLS policy: foldername(name)[1] = userId
+        const filePath = `${userId}/${fileName}`;
         
         console.log('Subiendo avatar a Storage:', filePath);
         
@@ -708,6 +733,8 @@
         if (data.user) {
           console.log('Creando perfil para usuario:', data.user.id, 'avatarUrl:', avatarUrl);
           // Use upsert to handle both insert and update cases
+          // Note: Profile creation might fail if email not confirmed yet (RLS).
+          // We handle gracefully - profile will be created on first login via ensureProfileExists
           const { error: profError } = await supabaseClient.from('profiles').upsert([{
             id: data.user.id,
             full_name: fullName,
@@ -715,8 +742,8 @@
             avatar_url: avatarUrl
           }]).select().single();
           if (profError) {
-            console.error("Error al guardar perfil:", profError);
-            showToast("Error guardando perfil: " + profError.message, 'bg-red-600');
+            console.warn("Perfil no creado aún (email sin confirmar):", profError.message);
+            // Don't block registration - profile will be created on first login
           } else {
             console.log('Perfil creado/actualizado exitosamente');
             // Force refresh the profile after successful insert
@@ -725,7 +752,7 @@
         }
 
         closeModal('auth-modal');
-        showToast("Registro completado con éxito.", "bg-emerald-600");
+        showToast("Registro completado. Verifica tu email para activar la cuenta.", "bg-emerald-600");
         document.getElementById('form-register').reset();
         document.getElementById('reg-avatar-preview').classList.add('hidden');
         document.getElementById('avatar-upload-label').classList.remove('hidden');
