@@ -1216,9 +1216,11 @@
             .from('products')
             .select('*')
             .eq('status', 'AVAILABLE')
-            .or(`expires_at.is.null,expires_at.gt.${now}`)
             .order('created_at', { ascending: false })
-          if (!error && data) productsList = data
+          if (!error && data) {
+            // Filtrar productos expirados en el cliente
+            productsList = data.filter(p => !p.expires_at || new Date(p.expires_at) > new Date())
+          }
         }
         renderProducts()
       } catch (err) {
