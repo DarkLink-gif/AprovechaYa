@@ -881,7 +881,7 @@
             // Create an error object with the error details for proper handling
             const error = new Error('Edge Function error');
             error.name = 'EdgeFunctionError';
-            ;(error as any).details = result.error;
+            error.details = result.error;
             throw error;
           }
           
@@ -890,7 +890,8 @@
           lastError = error;
           
           // Don't retry on 4xx errors (client errors) - only retry on 5xx/network errors
-          const isClientError = (error as any).details?.status >= 400 && (error as any).details?.status < 500;
+          const errorDetails = error.details || {};
+          const isClientError = errorDetails.status >= 400 && errorDetails.status < 500;
           const isTimeout = error.message?.includes('Timeout');
           
           console.warn(`IA attempt ${attempt + 1} failed:`, error.message);
@@ -1037,7 +1038,7 @@
           console.error("error:", error);
           
           // Extract error details from the new error format
-          const errorDetails = (error as any).details || {};
+          const errorDetails = error.details || {};
           const errorBody = errorDetails;
           
           console.error("Parsed error body:", errorBody);
