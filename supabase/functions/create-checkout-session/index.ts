@@ -7,42 +7,54 @@ const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') || '', {
   httpClient: Stripe.createFetchHttpClient(),
 })
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': Deno.env.get('ALLOWED_ORIGIN') || 'https://localhost:3000',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-}
-
 const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') || 'http://localhost:8000,http://localhost:3000,http://127.0.0.1:5500').split(',')
 
-function validateOrigin(origin: string | null): boolean {
-  if (!origin) return false
-  return ALLOWED_ORIGINS.includes(origin)
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : (Deno.env.get('ALLOWED_ORIGIN') || 'https://localhost:3000')
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Credentials': 'true',
+  }
 }
 
-function createErrorResponse(message: string, status: number) {
+function createErrorResponse(message: string, status: number, origin: string | null) {
   return new Response(
     JSON.stringify({ error: message }),
-    { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    { status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' } }
   )
 }
 
+function getCorsHeaders(origin: string | null) {
+  const allowedOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : (Deno.env.get('ALLOWED_ORIGIN') || 'https://localhost:3000')
+  return {
+    'Access-Control-Allow-Origin': allowedOrigin,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Credentials': 'true',
+  }
+}
+
 serve(async (req) => {
+  const origin = req.headers.get('origin')
+  const corsHeaders = getCorsHeaders(origin)
+
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
   // Validate Origin header
-  const origin = req.headers.get('origin')
-  if (!validateOrigin(origin)) {
-    return createErrorResponse('Origin not allowed', 403)
+  const originHeader = req.headers.get('origin')
+  if (!originHeader || !ALLOWED_ORIGINS.includes(originHeader)) {
+    return createErrorResponse('Origin not allowed', 403, originHeader)
   }
 
   try {
     // Create Supabase client with user's JWT for auth validation
     const authHeader = req.headers.get('authorization')
     if (!authHeader) {
-      return createErrorResponse('Missing authorization header', 401)
+      return createErrorResponse('Missing authorization header', 401, originHeader)
     }
 
     const supabase = createClient(
@@ -54,18 +66,19 @@ serve(async (req) => {
     // Get authenticated user from JWT
     const { data: { user }, error: authError } = await supabase.auth.getUser()
     if (authError || !user) {
-      return createErrorResponse('Invalid or expired token', 401)
+      return createErrorResponse('Invalid or expired token', 401, originHeader)
     }
 
     const { productId } = await req.json()
     if (!productId) {
-      return createErrorResponse('Missing productId', 400)
+      return createErrorResponse('Missing productId', 400, originHeader)
     }
 
     // Validate userId matches authenticated user (ignore body userId)
-    const requestUserId = (await req.json()).userId
+    const body = await req.json()
+    const requestUserId = body.userId
     if (requestUserId && requestUserId !== user.id) {
-      return createErrorResponse('User ID mismatch', 403)
+      return createErrorResponse('User ID mismatch', 403, originHeader)
     }
 
     const supabaseAdmin = createClient(
@@ -115,11 +128,11 @@ serve(async (req) => {
       const redirectUrl = `${origin}/?status=success&product_id=${productId}&donation=true`
       return new Response(
         JSON.stringify({ url: redirectUrl, donation: true }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+        { headers: { ...getCorsHeaders(originHeader), 'Content-Type': 'application/json' }, status: 200 }
       )
     }
 
-    // Corrección de la columna: discount_price
+    // Validate minimum price for Stripe ($0.50 minimum)
     const priceInCents = Math.round(Number(product.discount_price) * 100)
 
     if (isNaN(priceInCents) || priceInCents < 50) {
@@ -167,9 +180,9 @@ serve(async (req) => {
 
     return new Response(
       JSON.stringify({ url: session.url }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
+      { headers: { ...getCorsHeaders(originHeader), 'Content-Type': 'application/json' }, status: 200 }
     )
   } catch (error) {
-    return createErrorResponse(error.message, 400)
+    return createErrorResponse(error.message, 400, originHeader)
   }
 })
