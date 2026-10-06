@@ -32,7 +32,8 @@ serve(async (req) => {
     let event: Stripe.Event
 
     try {
-      event = stripe.webhooks.constructEvent(body, signature, webhookSecret)
+      // Use constructEventAsync with SubtleCryptoProvider for Deno compatibility
+      event = await stripe.webhooks.constructEventAsync(body, signature, webhookSecret)
     } catch (err) {
       console.error('Webhook signature verification failed:', err.message)
       return new Response(
@@ -46,33 +47,23 @@ serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // Manejar checkout.session.completed
+    // Handle checkout.session.completed (legacy, but kept for compatibility)
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object as Stripe.Checkout.Session
       
       if (session.payment_status === 'paid') {
-        const productId = session.metadata?.productId
-        const userId = session.metadata?.userId
+        await handleSuccessfulPayment(session.metadata?.productId, session.metadata?.userId, supabase)
+      }
+    }
 
-        if (productId && userId) {
-          const { error } = await supabase
-            .from('products')
-            .update({ 
-              status: 'RESERVED', 
-              reserved_by: userId 
-            })
-            .eq('id', productId)
-
-          if (error) {
-            console.error('Error updating product after payment:', error)
-            return new Response(
-              JSON.stringify({ error: 'Failed to update product' }),
-              { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-            )
-          }
-
-          console.log(`Product ${productId} reserved by user ${userId} after successful payment`)
-        }
+    // Handle payment_intent.succeeded (more reliable for payment confirmation)
+    if (event.type === 'payment_intent.succeeded') {
+      const paymentIntent = event.data.object as Stripe.PaymentIntent
+      const productId = paymentIntent.metadata?.productId
+      const userId = paymentIntent.metadata?.userId
+      
+      if (productId && userId) {
+        await handleSuccessfulPayment(productId, userId, supabase)
       }
     }
 
@@ -88,3 +79,38 @@ serve(async (req) => {
     )
   }
 })
+
+async function handleSuccessfulPayment(
+  productId: string | undefined, 
+  userId: string | undefined, 
+  supabase: ReturnType<typeof createClient>
+) {
+  if (!productId || !userId) return
+
+  // Atomic update: only reserve if still AVAILABLE
+  const { data, error } = await supabase
+    .from('products')
+    .update({ 
+      status: 'RESERVED', 
+      reserved_by: userId 
+    })
+    .eq('id', productId)
+    .eq('status', 'AVAILABLE')
+    .select('id')
+    .single()
+
+  if (error) {
+    console.error('Error updating product after payment:', error)
+    // Don't return error to Stripe - we already acknowledged the webhook
+    // Log for manual review
+    console.error(`Failed to reserve product ${productId} for user ${userId}:`, error)
+    return
+  }
+
+  if (!data) {
+    console.warn(`Product ${productId} was already reserved/sold (race condition)`)
+    return
+  }
+
+  console.log(`Product ${productId} reserved by user ${userId} after successful payment`)
+}
