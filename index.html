@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AprovechaYa - Rescate de Alimentos</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🥗</text></svg>">
   
   <!-- Tipografía Google Fonts: Plus Jakarta Sans -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -300,13 +301,11 @@
       <h3 class="text-lg font-extrabold text-slate-900 mb-1">Publicar Oferta</h3>
       <p class="text-xs font-medium text-slate-400 mb-6">Completa la información o sube una imagen.</p>
 
-      <div id="image-preview-box" class="border-2 border-dashed border-slate-200 rounded-2xl p-5 bg-slate-50 hover:bg-slate-100/80 transition relative mb-4 cursor-pointer">
+      <div id="image-preview-box" class="border-2 border-dashed border-slate-200 rounded-2xl p-5 bg-slate-50 hover:bg-slate-100/80 transition relative mb-4">
         <!-- File input covers placeholder area only -->
-        <label for="file-input" class="absolute inset-0 cursor-pointer" style="z-index: 10;">
-          <input type="file" id="file-input" accept="image/*" capture="environment" multiple class="hidden" onchange="handleProductImageSelect(event)">
-        </label>
+        <input type="file" id="file-input" accept="image/*" multiple class="hidden" onchange="handleProductImageSelect(event)">
         
-        <div id="preview-placeholder" class="space-y-2 relative z-5">
+        <div id="preview-placeholder" onclick="document.getElementById('file-input').click()" class="space-y-2 cursor-pointer">
           <div class="w-10 h-10 rounded-2xl bg-emerald-50 text-emerald-600 mx-auto flex items-center justify-center text-lg">
             <i class="fa-solid fa-camera"></i>
           </div>
@@ -314,7 +313,7 @@
           <p class="text-[11px] text-slate-400">Selecciona o toma fotos, luego pulsa Analizar</p>
         </div>
         
-        <div id="preview-grid" class="hidden grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 relative z-5">
+        <div id="preview-grid" class="hidden grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3">
           <!-- Previews se insertan aquí dinámicamente -->
         </div>
         
@@ -352,11 +351,11 @@
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Precio Original ($)</label>
-            <input type="number" step="0.01" id="p-original-price" required placeholder="5.00" class="w-full text-sm font-medium border border-slate-200 rounded-xl p-3 outline-none focus:border-emerald-500">
+            <input type="number" step="0.01" id="p-original-price" min="0.01" required placeholder="5.00" class="w-full text-sm font-medium border border-slate-200 rounded-xl p-3 outline-none focus:border-emerald-500">
           </div>
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Precio Oferta ($)</label>
-            <input type="number" step="0.01" id="p-discount-price" required placeholder="2.00" class="w-full text-sm font-medium border border-slate-200 rounded-xl p-3 outline-none focus:border-emerald-500">
+            <input type="number" step="0.01" id="p-discount-price" min="0" required placeholder="2.00" class="w-full text-sm font-medium border border-slate-200 rounded-xl p-3 outline-none focus:border-emerald-500">
           </div>
         </div>
 
@@ -371,7 +370,7 @@
           </div>
           <div>
             <label class="block text-xs font-bold text-slate-700 mb-1">Horas de Expiración</label>
-            <input type="number" id="p-expiration-hours" value="12" min="1" required class="w-full text-sm font-medium border border-slate-200 rounded-xl p-3 outline-none focus:border-emerald-500">
+            <input type="number" id="p-expiration-hours" value="12" min="1" max="72" required class="w-full text-sm font-medium border border-slate-200 rounded-xl p-3 outline-none focus:border-emerald-500">
           </div>
         </div>
 
@@ -386,7 +385,7 @@
         </div>
 
         <div class="flex items-center gap-2 pt-1">
-          <input type="checkbox" id="p-is-donation" class="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500">
+          <input type="checkbox" id="p-is-donation" onchange="toggleDonationFields()" class="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500">
           <label for="p-is-donation" class="text-xs font-bold text-slate-700">¿Es una donación gratuita?</label>
         </div>
 
@@ -444,16 +443,36 @@
     let showOnlyDonations = false;
     let selectedProductFiles = [];      // Archivos seleccionados para el producto
     let compressedProductImages = [];   // Imágenes comprimidas listas para IA
+    let productRejected = false;        // La IA rechazó el producto por riesgo sanitario
+    let isAnalyzing = false;
+    let reserving = false;
+    let pendingAvatarFile = null;       // Foto elegida en el registro (se sube tras el primer login)
+    let toastTimer = null;
+    let realtimeChannel = null;
+    let realtimeTimer = null;
+    const MAX_IMAGES = 5;
+    const PLACEHOLDER_IMG = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'><rect width='100%' height='100%' fill='%23e2e8f0'/></svg>";
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     // XSS prevention: escape HTML special characters
-    function escapeHtml(text) {
-      if (typeof text !== 'string') return '';
-      return text
-        .replace(/&/g, '&')
-        .replace(/</g, '<')
-        .replace(/>/g, '>')
-        .replace(/"/g, '"')
-        .replace(/'/g, '&#039;');
+    function escapeHtml(value) {
+      // Se usan escapes \u0026 para que ninguna herramienta convierta las entidades en caracteres planos
+      const map = { '&': '\u0026amp;', '<': '\u0026lt;', '>': '\u0026gt;', '"': '\u0026quot;', "'": '\u0026#39;' };
+      return String(value ?? '').replace(/[&<>"']/g, (ch) => map[ch]);
+    }
+
+    // Solo permite http(s) y data:image como origen de <img>
+    function safeImgUrl(url, fallback = PLACEHOLDER_IMG) {
+      const u = String(url || '');
+      return /^(https?:\/\/|data:image\/)/i.test(u) ? u : fallback;
+    }
+
+    function isExpired(p) {
+      return !!p.expires_at && new Date(p.expires_at).getTime() <= Date.now();
+    }
+
+    function hoursUntil(p) {
+      return Math.max(0, Math.round(((new Date(p.expires_at).getTime() - Date.now()) / 36e5) * 10) / 10);
     }
 
     window.addEventListener('DOMContentLoaded', async () => {
@@ -461,54 +480,45 @@
       await loadProducts();
       setupRealtime();
       await checkStripeReturnStatus();
+      // Oculta las ofertas vencidas mientras la página sigue abierta
+      setInterval(() => { if (currentTab === 'explore' || currentTab === 'mine') renderProducts(); }, 60000);
     });
 
     async function checkStripeReturnStatus() {
-      const urlParams = new URLSearchParams(window.location.search);
-      const status = urlParams.get('status');
-      const productId = urlParams.get('product_id');
-      const isDonation = urlParams.get('donation') === 'true';
+      const params = new URLSearchParams(window.location.search);
+      const status = params.get('status');
+      const productId = params.get('product_id');
+      const isDonation = params.get('donation') === 'true';
+      if (!status) return;
 
-      if (status === 'success' && productId) {
-        if (isDonation) {
-          showToast("¡Donación reservada con éxito! Pásala a recoger.", "bg-emerald-600");
-        } else {
-          showToast("¡Pago completado con éxito! Tu reserva está lista.", "bg-emerald-600");
-        }
+      window.history.replaceState({}, document.title, window.location.pathname);
 
-        // Wait a bit for webhook to process, then refresh
-        window.history.replaceState({}, document.title, window.location.pathname);
-        
-        // Poll for product status change (webhook might take a moment)
-        let attempts = 0;
-        const maxAttempts = 10;
-        const pollInterval = 1000;
-        
-        const pollForStatus = async () => {
-          if (attempts >= maxAttempts) {
-            await loadProducts();
-            return;
-          }
-          
-          try {
-            if (!initSupabaseClient()) { await loadProducts(); return; }
-            const { data } = await supabaseClient.from('products').select('status').eq('id', productId).single();
-            if (data && (data.status === 'RESERVED' || data.status === 'SOLD')) {
-              await loadProducts();
-            } else {
-              attempts++;
-              setTimeout(pollForStatus, pollInterval);
-            }
-          } catch {
-            attempts++;
-            setTimeout(pollForStatus, pollInterval);
-          }
-        };
-        
-        await pollForStatus();
-      } else if (status === 'cancelled') {
+      if (status === 'cancelled') {
         showToast("El proceso de pago fue cancelado.", "bg-amber-600");
-        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      }
+      if (status !== 'success' || !productId || !initSupabaseClient()) return;
+
+      if (!currentUserProfile) {
+        showToast("Inicia sesión para ver el estado de tu reserva.", "bg-amber-600");
+        return;
+      }
+
+      // El webhook de Stripe es asíncrono: se confirma la reserva real antes de celebrar
+      showLoading("Confirmando tu reserva...");
+      let confirmed = false;
+      for (let i = 0; i < 15 && !confirmed; i++) {
+        const { data } = await supabaseClient.from('products').select('status, reserved_by').eq('id', productId).maybeSingle();
+        confirmed = !!data && data.reserved_by === currentUserProfile.id && ['RESERVED', 'SOLD'].includes(data.status);
+        if (!confirmed) await sleep(1000);
+      }
+      hideLoading();
+      await loadProducts();
+
+      if (confirmed) {
+        showToast(isDonation ? "¡Donación reservada con éxito! Pásala a recoger." : "¡Pago completado! Tu reserva está lista.", "bg-emerald-600");
+      } else {
+        showToast("Recibimos tu pago pero la reserva aún no se confirma. Revisa 'Mi Perfil' en unos minutos.", "bg-amber-600");
       }
     }
 
@@ -526,32 +536,40 @@
         renderAuthUI(null);
       }
 
-      supabaseClient.auth.onAuthStateChange(async (event, session) => {
-        if (session) {
-          await fetchUserProfile(session.user.id);
-        } else {
-          currentUserProfile = null;
-          renderAuthUI(null);
-        }
+      supabaseClient.auth.onAuthStateChange((event, newSession) => {
+        if (event === 'INITIAL_SESSION' || event === 'TOKEN_REFRESHED') return;
+        // IMPORTANTE: no hacer 'await' a llamadas de Supabase dentro de este callback (puede bloquear la librería).
+        setTimeout(async () => {
+          if (newSession) {
+            if (currentUserProfile && currentUserProfile.id === newSession.user.id && event !== 'USER_UPDATED') return;
+            await fetchUserProfile(newSession.user.id);
+          } else {
+            currentUserProfile = null;
+            renderAuthUI(null);
+          }
+          await loadProducts();
+          switchTab(currentTab);
+        }, 0);
       });
     }
 
-    async function fetchUserProfile(userId) {
+    async function fetchUserProfile(userId, attempt = 0) {
       try {
-        const { data, error } = await supabaseClient.from('profiles').select('*').eq('id', userId).single();
-        if (!error && data) {
-          console.log('Perfil obtenido:', data);
+        const { data, error } = await supabaseClient.from('profiles').select('*').eq('id', userId).maybeSingle();
+        if (error) throw error;
+        if (data) {
           currentUserProfile = data;
-        } else if (error && error.code === 'PGRST116') {
-          console.warn('Perfil no encontrado, creando uno por defecto...');
+        } else if (attempt < 2) {
+          // El trigger de la BD puede tardar un instante en crear el perfil
+          await sleep(700);
+          return fetchUserProfile(userId, attempt + 1);
+        } else {
+          console.warn('Perfil no encontrado; se crea uno por defecto (consumidor).');
           currentUserProfile = { id: userId, full_name: 'Usuario', role: 'consumer', avatar_url: null };
           await ensureProfileExists(userId);
-        } else {
-          console.error('Error fetchUserProfile:', error);
-          currentUserProfile = { id: userId, full_name: 'Usuario', role: 'consumer', avatar_url: null };
         }
       } catch (e) {
-        console.error('Excepción fetchUserProfile:', e);
+        console.error('Error obteniendo perfil:', e);
         currentUserProfile = { id: userId, full_name: 'Usuario', role: 'consumer', avatar_url: null };
       }
       renderAuthUI(currentUserProfile);
@@ -559,17 +577,13 @@
 
     async function ensureProfileExists(userId) {
       try {
-        const { error } = await supabaseClient.from('profiles').upsert([{
-          id: userId,
-          full_name: 'Usuario',
-          role: 'consumer',
-          avatar_url: null
-        }]).select().single();
-        if (!error) {
-          console.log('Perfil por defecto creado/actualizado');
-        }
+        const { error } = await supabaseClient.from('profiles').upsert(
+          [{ id: userId, full_name: 'Usuario', role: 'consumer' }],
+          { onConflict: 'id', ignoreDuplicates: true }
+        );
+        if (error) console.warn('No se pudo crear el perfil por defecto:', error.message);
       } catch (e) {
-        console.warn('No se pudo crear perfil por defecto:', e);
+        console.warn('No se pudo crear el perfil por defecto:', e);
       }
     }
 
@@ -579,16 +593,14 @@
 
       if (profile) {
         const avatar = profile.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(profile.full_name)}&background=0D9488&color=fff`;
-        console.log('renderAuthUI - avatar_url from profile:', profile.avatar_url);
-        console.log('renderAuthUI - using avatar:', avatar);
         
         deskPanel.innerHTML = `
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
-              <img src="${avatar}" class="w-10 h-10 rounded-full object-cover border-2 border-emerald-500/20">
+              <img src="${escapeHtml(avatar)}" class="w-10 h-10 rounded-full object-cover border-2 border-emerald-500/20">
               <div class="min-w-0">
-                <p class="text-sm font-bold text-slate-800 truncate">${profile.full_name}</p>
-                <p class="text-xs font-semibold text-emerald-600 capitalize">${profile.role}</p>
+                <p class="text-sm font-bold text-slate-800 truncate">${escapeHtml(profile.full_name)}</p>
+                <p class="text-xs font-semibold text-emerald-600 capitalize">${escapeHtml(profile.role)}</p>
               </div>
             </div>
             <button onclick="handleLogout()" class="text-slate-400 hover:text-red-500 text-sm p-2" title="Cerrar Sesión">
@@ -599,7 +611,7 @@
 
         mobPanel.innerHTML = `
           <div class="flex items-center gap-2">
-            <img src="${avatar}" class="w-8 h-8 rounded-full object-cover">
+            <img src="${escapeHtml(avatar)}" class="w-8 h-8 rounded-full object-cover">
             <button onclick="handleLogout()" class="text-xs text-slate-500 font-bold ml-1">Salir</button>
           </div>
         `;
@@ -623,6 +635,10 @@
       if (!currentUserProfile) {
         showToast("Debes iniciar sesión para publicar una oferta", "bg-amber-600");
         openModal('auth-modal');
+        return;
+      }
+      if (modalId === 'scan-modal' && currentUserProfile.role !== 'merchant') {
+        showToast("Solo las cuentas de Comercio pueden publicar ofertas", "bg-amber-600");
         return;
       }
       openModal(modalId);
@@ -651,6 +667,18 @@
       }
     }
 
+    function translateAuthError(err) {
+      const msg = String((err && err.message) || err || '');
+      if (/invalid login credentials/i.test(msg)) return 'Correo o contraseña incorrectos.';
+      if (/email not confirmed/i.test(msg)) return 'Debes confirmar tu correo antes de ingresar. Revisa tu bandeja de entrada.';
+      if (/already registered|already been registered/i.test(msg)) return 'Este correo ya está registrado.';
+      if (/password should be at least/i.test(msg)) return 'La contraseña debe tener al menos 6 caracteres.';
+      if (/rate limit|too many/i.test(msg)) return 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo.';
+      if (/database error saving new user/i.test(msg)) return 'No se pudo crear el perfil. Ejecuta la migración 04 en Supabase.';
+      if (/failed to fetch|networkerror/i.test(msg)) return 'Sin conexión con el servidor. Revisa tu internet.';
+      return msg || 'Error desconocido';
+    }
+
     async function handleLogin(e) {
       e.preventDefault();
       if (!initSupabaseClient()) {
@@ -658,40 +686,27 @@
         return;
       }
 
-      const email = document.getElementById('login-email').value;
+      const email = document.getElementById('login-email').value.trim();
       const password = document.getElementById('login-password').value;
 
       showLoading("Autenticando...");
       try {
-        const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        
+
         closeModal('auth-modal');
+        document.getElementById('form-login').reset();
         showToast("¡Sesión iniciada con éxito!", "bg-emerald-600");
-        
-        // Upload avatar if one was selected during registration
-        const avatarFile = document.getElementById('reg-avatar-file').files[0];
-        if (avatarFile) {
-          try {
-            const { data: { user } } = await supabaseClient.auth.getUser();
-            if (user) {
-              const avatarUrl = await uploadAvatarToStorage(avatarFile, user.id);
-              if (avatarUrl) {
-                await supabaseClient.from('profiles').upsert({
-                  id: user.id,
-                  avatar_url: avatarUrl
-                });
-                // Refresh profile to update UI
-                await fetchUserProfile(user.id);
-                showToast("Foto de perfil actualizada", "bg-emerald-600");
-              }
-            }
-          } catch (avatarErr) {
-            console.warn('Error subiendo avatar tras login:', avatarErr);
-          }
+
+        // Si eligió foto en el registro (misma visita), se sube ahora que ya hay sesión
+        if (pendingAvatarFile && data && data.user) {
+          const file = pendingAvatarFile;
+          pendingAvatarFile = null;
+          const userId = data.user.id;
+          setTimeout(() => applyAvatar(file, userId), 0);
         }
       } catch (err) {
-        showToast("Error: " + err.message, "bg-red-600");
+        showToast("Error: " + translateAuthError(err), "bg-red-600");
       } finally {
         hideLoading();
       }
@@ -700,7 +715,13 @@
     function handleAvatarFileSelect(e) {
       const file = e.target.files[0];
       if (!file) return;
-      
+      if (!file.type.startsWith('image/') || file.size > 5 * 1024 * 1024) {
+        showToast("Elige una imagen de máximo 5 MB", "bg-amber-600");
+        e.target.value = '';
+        return;
+      }
+      pendingAvatarFile = file;
+
       const reader = new FileReader();
       reader.onload = (evt) => {
         document.getElementById('reg-avatar-preview').src = evt.target.result;
@@ -712,32 +733,37 @@
 
     async function uploadAvatarToStorage(file, userId) {
       if (!file) return null;
-      
       try {
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${Date.now()}.${fileExt}`;
-        // Path must be userId/filename for RLS policy: foldername(name)[1] = userId
-        const filePath = `${userId}/${fileName}`;
-        
-        console.log('Subiendo avatar a Storage:', filePath);
-        
+        const ext = (file.type.split('/')[1] || 'jpg').replace(/[^a-z0-9]/gi, '') || 'jpg';
+        // La ruta debe ser userId/archivo para cumplir la política de Storage
+        const filePath = `${userId}/${Date.now()}.${ext}`;
+
         const { error: uploadError } = await supabaseClient.storage
           .from('avatars')
           .upload(filePath, file, { cacheControl: '3600', upsert: true });
-        
-        if (uploadError) {
-          console.error('Storage upload error:', uploadError);
-          throw uploadError;
-        }
-        
+        if (uploadError) throw uploadError;
+
         const { data } = supabaseClient.storage.from('avatars').getPublicUrl(filePath);
-        console.log('Avatar URL generada:', data.publicUrl);
         return data.publicUrl;
       } catch (err) {
         console.error('Error subiendo avatar:', err);
         showToast('Error subiendo foto: ' + (err.message || 'Error desconocido'), 'bg-amber-600');
         return null;
       }
+    }
+
+    // Sube la foto, la guarda en el perfil (UPDATE, no upsert) y refresca la UI
+    async function applyAvatar(file, userId) {
+      const url = await uploadAvatarToStorage(file, userId);
+      if (!url) return false;
+      const { error } = await supabaseClient.from('profiles').update({ avatar_url: url }).eq('id', userId);
+      if (error) {
+        showToast("No se pudo guardar la foto: " + error.message, "bg-amber-600");
+        return false;
+      }
+      await fetchUserProfile(userId);
+      showToast("Foto de perfil actualizada", "bg-emerald-600");
+      return true;
     }
 
     async function handleRegister(e) {
@@ -747,41 +773,49 @@
         return;
       }
 
-      const email = document.getElementById('reg-email').value;
+      const email = document.getElementById('reg-email').value.trim();
       const password = document.getElementById('reg-password').value;
-      const fullName = document.getElementById('reg-fullname').value;
+      const fullName = document.getElementById('reg-fullname').value.trim();
       const role = document.getElementById('reg-role').value;
-      const avatarFile = document.getElementById('reg-avatar-file').files[0];
 
       showLoading("Creando cuenta...");
       try {
-        // Pass metadata in signUp options - this will be available in raw_user_meta_data for the trigger
-        const { data, error } = await supabaseClient.auth.signUp({ 
-          email, 
+        // full_name y role van en options.data => raw_user_meta_data, que lee el trigger de la BD
+        const { data, error } = await supabaseClient.auth.signUp({
+          email,
           password,
-          data: {
-            full_name: fullName,
-            role: role
+          options: {
+            data: { full_name: fullName, role: role },
+            emailRedirectTo: window.location.origin + window.location.pathname
           }
         });
         if (error) throw error;
 
-        // DO NOT upload avatar during registration - user email not confirmed yet
-        // Avatar will be uploaded after first login when user has valid session
-
-        if (data.user) {
-          console.log('Usuario registrado:', data.user.id, 'Email confirmado:', !!data.session);
-          // Profile will be created automatically by the database trigger
-          // No need to manually insert - trigger handles it
+        // Con confirmación de correo activa, un correo ya registrado no da error: devuelve identities vacío
+        if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+          throw new Error('Este correo ya está registrado.');
         }
 
         closeModal('auth-modal');
-        showToast("Registro completado. Verifica tu email para activar la cuenta.", "bg-emerald-600");
         document.getElementById('form-register').reset();
         document.getElementById('reg-avatar-preview').classList.add('hidden');
         document.getElementById('avatar-upload-label').classList.remove('hidden');
+        toggleAuthMode('login');
+
+        if (data.session && data.user) {
+          // Confirmación de correo desactivada: ya hay sesión, la foto se sube de inmediato
+          showToast("¡Cuenta creada! Ya puedes usar la app.", "bg-emerald-600");
+          if (pendingAvatarFile) {
+            const file = pendingAvatarFile;
+            pendingAvatarFile = null;
+            const userId = data.user.id;
+            setTimeout(() => applyAvatar(file, userId), 800);
+          }
+        } else {
+          showToast("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.", "bg-emerald-600");
+        }
       } catch (err) {
-        showToast("Error en el registro: " + err.message, "bg-red-600");
+        showToast("Error en el registro: " + translateAuthError(err), "bg-red-600");
       } finally {
         hideLoading();
       }
@@ -822,284 +856,245 @@
       document.getElementById('p-lng').value = lng;
     }
 
-    function compressImage(base64, maxWidth = 1024, quality = 0.7) {
-      return new Promise((resolve) => {
+    function compressImage(dataUrl, maxWidth = 1024, quality = 0.7) {
+      return new Promise((resolve, reject) => {
         const img = new Image();
         img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let { width, height } = img;
-          
-          if (width > maxWidth) {
-            height = (height * maxWidth) / width;
-            width = maxWidth;
+          try {
+            let { width, height } = img;
+            if (width > maxWidth) {
+              height = Math.round((height * maxWidth) / width);
+              width = maxWidth;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';            // evita fondo negro en PNG con transparencia
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+          } catch (err) {
+            reject(err);
           }
-          
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          
-          // Detectar si es PNG (tiene transparencia) para preservar alpha
-          const isPNG = base64.startsWith('data:image/png');
-          const mimeType = isPNG ? 'image/png' : 'image/jpeg';
-          const compressed = canvas.toDataURL(mimeType, isPNG ? 1.0 : quality);
-          resolve(compressed);
         };
-        img.src = base64;
+        img.onerror = () => reject(new Error('Imagen no válida'));
+        img.src = dataUrl;
       });
     }
 
-    // Convert base64 data URL to Blob for Storage upload
-    function base64ToBlob(base64) {
-      const parts = base64.split(',');
-      const mimeType = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+    // Convierte un data URL en Blob para subirlo a Storage
+    function base64ToBlob(dataUrl) {
+      const parts = dataUrl.split(',');
+      const mimeType = (parts[0].match(/:(.*?);/) || [])[1] || 'image/jpeg';
       const byteString = atob(parts[1]);
-      const arrayBuffer = new ArrayBuffer(byteString.length);
-      const uint8Array = new Uint8Array(arrayBuffer);
-      for (let i = 0; i < byteString.length; i++) {
-        uint8Array[i] = byteString.charCodeAt(i);
-      }
-      return new Blob([uint8Array], { type: mimeType });
+      const bytes = new Uint8Array(byteString.length);
+      for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+      return new Blob([bytes], { type: mimeType });
     }
 
-    // Retry helper with exponential backoff
-    async function invokeWithRetry(functionName, body, maxRetries = 3) {
+    // Lee el mensaje real que devuelve una Edge Function cuando responde con error
+    async function extractFunctionError(err) {
+      try {
+        const res = err && err.context;
+        if (res && typeof res.clone === 'function') {
+          const body = await res.clone().json();
+          if (body && (body.error || body.message)) return body.error || body.message;
+        }
+      } catch (_) { /* la respuesta no era JSON */ }
+      return (err && err.message) || 'Error desconocido';
+    }
+
+    // Reintenta solo errores temporales (red, 5xx, 429). Los 4xx se devuelven de inmediato.
+    async function invokeWithRetry(functionName, body, maxRetries = 2) {
       let lastError = null;
-      
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        let timer;
         try {
-          // Timeout wrapper using Promise.race (supabase-js doesn't support AbortSignal in functions.invoke)
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout: La IA tardó demasiado en responder')), 30000)
-          );
-          
-          const invokePromise = supabaseClient.functions.invoke(functionName, { body });
-          
-          const result = await Promise.race([invokePromise, timeoutPromise]);
-          
+          const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Timeout: la IA tardó demasiado en responder')), 30000);
+          });
+          const result = await Promise.race([supabaseClient.functions.invoke(functionName, { body }), timeout]);
+          clearTimeout(timer);
+
           if (result.error) {
-            // Create an error object with the error details for proper handling
-            const error = new Error('Edge Function error');
-            error.name = 'EdgeFunctionError';
-            error.details = result.error;
-            throw error;
+            const failure = new Error(await extractFunctionError(result.error));
+            failure.status = result.error.context && result.error.context.status;
+            throw failure;
           }
-          
           return result;
         } catch (error) {
+          clearTimeout(timer);
           lastError = error;
-          
-          // Don't retry on 4xx errors (client errors) - only retry on 5xx/network errors
-          const errorDetails = error.details || {};
-          const isClientError = errorDetails.status >= 400 && errorDetails.status < 500;
-          const isTimeout = error.message?.includes('Timeout');
-          
-          console.warn(`IA attempt ${attempt + 1} failed:`, error.message);
-          
-          if (attempt < maxRetries && !isClientError && !isTimeout) {
-            const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
-            console.log(`Retrying IA in ${delay}ms... (attempt ${attempt + 2}/${maxRetries + 1})`);
-            await new Promise(resolve => setTimeout(resolve, delay));
-            continue;
-          }
-          
-          throw error;
+          const retriable = !error.status || error.status >= 500 || error.status === 429;
+          if (!retriable || attempt === maxRetries || /Timeout/.test(error.message)) break;
+          await sleep(1000 * Math.pow(2, attempt));
         }
       }
-      
-      throw lastError || new Error('Max retries exceeded');
+      throw lastError || new Error('No se pudo contactar la función');
     }
 
-    // Selección de imágenes (solo muestra previews, no analiza)
+    function setSubmitEnabled(enabled) {
+      const btn = document.querySelector('#product-form button[type="submit"]');
+      if (!btn) return;
+      btn.disabled = !enabled;
+      btn.classList.toggle('opacity-50', !enabled);
+      btn.classList.toggle('cursor-not-allowed', !enabled);
+    }
+
+    function hideAIError() {
+      const alertBox = document.getElementById('ai-error-alert');
+      if (alertBox) alertBox.classList.add('hidden');
+    }
+
+    // Una donación siempre es gratis: el precio de oferta se fija en 0
+    function toggleDonationFields() {
+      const donation = document.getElementById('p-is-donation').checked;
+      const price = document.getElementById('p-discount-price');
+      if (donation) {
+        price.value = '0';
+        price.disabled = true;
+      } else {
+        price.disabled = false;
+        if (price.value === '0') price.value = '';
+      }
+    }
+
+    // Dibuja las miniaturas (con botón X siempre visible, también en móvil)
+    function renderPreviews() {
+      const grid = document.getElementById('preview-grid');
+      grid.innerHTML = '';
+
+      compressedProductImages.forEach((src, i) => {
+        const box = document.createElement('div');
+        box.className = 'relative aspect-square rounded-xl overflow-hidden border border-slate-200';
+
+        const img = document.createElement('img');
+        img.src = src;
+        img.alt = 'Foto ' + (i + 1);
+        img.className = 'w-full h-full object-cover';
+
+        const badge = document.createElement('span');
+        badge.className = 'absolute top-1 right-1 bg-slate-900/80 text-white text-[10px] px-1.5 py-0.5 rounded';
+        badge.textContent = String(i + 1);
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.setAttribute('aria-label', 'Quitar foto');
+        del.className = 'absolute top-1 left-1 bg-red-600 text-white text-xs w-6 h-6 rounded-full flex items-center justify-center shadow';
+        del.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+        del.addEventListener('click', () => removeProductImage(i));
+
+        box.append(img, badge, del);
+        grid.appendChild(box);
+      });
+
+      const hasImages = compressedProductImages.length > 0;
+      grid.classList.toggle('hidden', !hasImages);
+      document.getElementById('preview-placeholder').classList.toggle('hidden', hasImages);
+      document.getElementById('image-actions').classList.toggle('hidden', !hasImages);
+
+      // Si cambian las fotos, el veredicto anterior de la IA ya no aplica
+      productRejected = false;
+      setSubmitEnabled(true);
+    }
+
     async function handleProductImageSelect(e) {
-      const files = Array.from(e.target.files);
+      const files = Array.from(e.target.files || []);
+      e.target.value = '';
       if (files.length === 0) return;
-      
-      const totalFiles = selectedProductFiles.length + files.length;
-      if (totalFiles > 5) {
-        showToast("Máximo 5 imágenes en total", "bg-amber-600");
+
+      if (selectedProductFiles.length + files.length > MAX_IMAGES) {
+        showToast(`Máximo ${MAX_IMAGES} imágenes en total`, "bg-amber-600");
         return;
       }
 
-      const alertBox = document.getElementById('ai-error-alert');
-      if (alertBox) alertBox.classList.add('hidden');
+      hideAIError();
+      showToast("Preparando imágenes...", "bg-sky-600");
 
-      // Mostrar previews en grid
-      const previewGrid = document.getElementById('preview-grid');
-      const placeholder = document.getElementById('preview-placeholder');
-      const actionsDiv = document.getElementById('image-actions');
-      
-      placeholder.classList.add('hidden');
-      const previewGridEl = document.getElementById('preview-grid');
-      previewGridEl.classList.remove('hidden');
-      document.getElementById('image-actions').classList.remove('hidden');
-
-      showToast("🤖 Comprimiendo imágenes...", "bg-sky-600");
-
-      // Comprimir todas las nuevas imágenes
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const base64 = await fileToBase64(file);
-        const compressed = await compressImage(base64, 1024, 0.7);
-        
-        // Guardar archivo original e imagen comprimida
-        selectedProductFiles.push(file);
-        compressedProductImages.push(compressed);
-        
-        // Crear preview con botón X para eliminar
-        const index = selectedProductFiles.length - 1;
-        const previewDiv = document.createElement('div');
-        previewDiv.className = 'relative aspect-square rounded-xl overflow-hidden border border-slate-200 group';
-        previewDiv.dataset.index = index;
-        previewDiv.innerHTML = `
-          <img src="${compressedProductImages[index]}" class="w-full h-full object-cover">
-          <span class="absolute top-1 right-1 bg-slate-900/80 text-white text-[10px] px-1.5 py-0.5 rounded">${index + 1}</span>
-          <button type="button" onclick="removeProductImage(${index})" class="absolute top-1 left-1 bg-red-600/90 text-white text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-            <i class="fa-solid fa-xmark"></i>
-          </button>
-        `;
-        document.getElementById('preview-grid').appendChild(previewDiv);
+      let added = 0;
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue;
+        try {
+          const compressed = await compressImage(await fileToBase64(file), 1024, 0.7);
+          selectedProductFiles.push(file);
+          compressedProductImages.push(compressed);
+          added++;
+        } catch (err) {
+          showToast(`No se pudo leer "${file.name}"`, "bg-amber-600");
+        }
       }
 
-      // Actualizar botones de acción
-      updateImageActions();
-      
-      // Resetear input file
-      document.getElementById('file-input').value = '';
-      
-      showToast(`${files.length} imagen(es) lista(s) para analizar`, "bg-emerald-600");
+      renderPreviews();
+      if (added > 0) showToast(`${added} imagen(es) lista(s). Pulsa "Analizar con IA".`, "bg-emerald-600");
     }
 
-    // Eliminar imagen del array y actualizar UI
     function removeProductImage(index) {
       selectedProductFiles.splice(index, 1);
       compressedProductImages.splice(index, 1);
-      
-      // Reconstruir previews
-      const previewGrid = document.getElementById('preview-grid');
-      previewGrid.innerHTML = '';
-      
-      compressedProductImages.forEach((compressed, i) => {
-        const previewDiv = document.createElement('div');
-        previewDiv.className = 'relative aspect-square rounded-xl overflow-hidden border border-slate-200 group';
-        previewDiv.dataset.index = i;
-        previewDiv.innerHTML = `
-          <img src="${compressed}" class="w-full h-full object-cover">
-          <span class="absolute top-1 right-1 bg-slate-900/80 text-white text-[10px] px-1.5 py-0.5 rounded">${i + 1}</span>
-          <button type="button" onclick="removeProductImage(${i})" class="absolute top-1 left-1 bg-red-600/90 text-white text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-            <i class="fa-solid fa-xmark"></i>
-          </button>
-        `;
-        previewGrid.appendChild(previewDiv);
-      });
-      
-      // Si no quedan imágenes, ocultar grid y mostrar placeholder
-      if (compressedProductImages.length === 0) {
-        document.getElementById('preview-grid').classList.add('hidden');
-        document.getElementById('preview-placeholder').classList.remove('hidden');
-        document.getElementById('image-actions').classList.add('hidden');
-      }
-      
-      updateImageActions();
+      hideAIError();
+      renderPreviews();
     }
 
-    function updateImageActions() {
-      const actionsDiv = document.getElementById('image-actions');
-      if (compressedProductImages.length > 0) {
-        actionsDiv.classList.remove('hidden');
-      } else {
-        actionsDiv.classList.add('hidden');
-      }
-    }
-
-    // Analizar imágenes con IA
     async function analyzeProductImages() {
+      if (isAnalyzing) return;
       if (compressedProductImages.length === 0) {
         showToast("No hay imágenes para analizar", "bg-amber-600");
         return;
       }
-
-      const alertBox = document.getElementById('ai-error-alert');
-      if (alertBox) alertBox.classList.add('hidden');
-
       if (!initSupabaseClient()) {
         showAIError("Supabase no configurado", "No se detectaron las credenciales. Completa los datos manualmente.");
         return;
       }
+      if (!currentUserProfile || currentUserProfile.role !== 'merchant') {
+        showAIError("Solo comercios", "El análisis con IA es solo para cuentas de Comercio.");
+        return;
+      }
 
+      isAnalyzing = true;
+      hideAIError();
       try {
-        showToast(`🤖 Analizando ${compressedProductImages.length} imágenes con IA...`, "bg-sky-600");
-        
-        const result = await invokeWithRetry('scan-product', { base64Images: compressedProductImages });
-        const { data, error } = result;
+        showToast(`Analizando ${compressedProductImages.length} imagen(es) con IA...`, "bg-sky-600");
+        const { data } = await invokeWithRetry('scan-product', { base64Images: compressedProductImages });
 
-        if (error) {
-          console.error("=== ERROR DETALLADO scan-product ===");
-          console.error("error:", error);
-          
-          // Extract error details from the new error format
-          const errorDetails = error.details || {};
-          const errorBody = errorDetails;
-          
-          console.error("Parsed error body:", errorBody);
-          
-          if (errorBody?.error === 'PRODUCTO_NO_APTO') {
-            showAIError(
-              "⚠️ Producto no apto para publicación",
-              errorBody?.message || "El producto presenta riesgos para la salud (moho, descomposición, signos de putrefacción). No puede publicarse por seguridad alimentaria."
-            );
-            document.querySelector('#product-form button[type="submit"]').disabled = true;
-            document.querySelector('#product-form button[type="submit"]').classList.add('opacity-50', 'cursor-not-allowed');
-            showToast("🚫 Producto rechazado por seguridad alimentaria", "bg-red-600");
-            return;
-          }
-          
-          const detailedMsg = errorBody?.error || errorBody?.message || error.message || "Error desconocido";
-          throw new Error(detailedMsg);
+        // Rechazo por seguridad alimentaria: se bloquea la publicación
+        if (data && data.rejected) {
+          productRejected = true;
+          setSubmitEnabled(false);
+          showAIError("Producto no apto para publicación",
+            data.message || "El producto presenta riesgos para la salud. No puede publicarse por seguridad alimentaria.");
+          showToast("Producto rechazado por seguridad alimentaria", "bg-red-600");
+          return;
         }
 
-        // Respuesta exitosa
-        if (data && data.product_name) {
-          document.getElementById('p-title').value = data.product_name;
-          document.getElementById('p-expiration-hours').value = data.expiration_hours || 12;
-          
-          if (data.suggested_price) {
-            document.getElementById('p-discount-price').value = data.suggested_price;
-            document.getElementById('p-original-price').value = (Number(data.suggested_price) * 1.5).toFixed(2);
-          }
-          
-          if (data.urgency) {
-            document.getElementById('p-urgency').value = data.urgency;
-          }
-          
-          const urgencyTags = { 'ALTA': '⚡ RELAMPAGO', 'MEDIA': '⌛ HOY', 'BAJA': '🏷️ LIQUIDACIÓN' };
-          document.getElementById('p-urgency-tag').value = urgencyTags[data.urgency] || 'HOY';
-          
-          if (data.packaging_condition) {
-            document.getElementById('p-packaging-condition').value = data.packaging_condition;
-          }
-          if (data.packaging_type) {
-            document.getElementById('p-packaging-type').value = data.packaging_type;
-          }
-          
-          // Actualizar currentBase64ProductImage para compatibilidad (primera imagen)
-          currentBase64ProductImage = compressedProductImages[0];
-          
-          document.querySelector('#product-form button[type="submit"]').disabled = false;
-          document.querySelector('#product-form button[type="submit"]').classList.remove('opacity-50', 'cursor-not-allowed');
-          
-          showToast("✨ Datos autocompletados con IA", "bg-emerald-600");
-        } else {
-          throw new Error("Respuesta inválida del servidor.");
+        if (!data || !data.product_name) throw new Error("Respuesta inválida del servidor.");
+
+        document.getElementById('p-title').value = data.product_name;
+        document.getElementById('p-expiration-hours').value = Math.min(72, Math.max(1, Number(data.expiration_hours) || 12));
+
+        const discount = Number(data.suggested_price);
+        const original = Number(data.original_price);
+        if (discount > 0) {
+          document.getElementById('p-discount-price').value = discount.toFixed(2);
+          document.getElementById('p-original-price').value = (original > discount ? original : discount * 1.5).toFixed(2);
         }
+        if (data.urgency) document.getElementById('p-urgency').value = data.urgency;
+
+        const urgencyTags = { 'ALTA': '⚡ RELAMPAGO', 'MEDIA': '⌛ HOY', 'BAJA': '🏷️ LIQUIDACIÓN' };
+        document.getElementById('p-urgency-tag').value = urgencyTags[data.urgency] || 'HOY';
+        if (data.packaging_condition) document.getElementById('p-packaging-condition').value = data.packaging_condition;
+        if (data.packaging_type) document.getElementById('p-packaging-type').value = data.packaging_type;
+
+        productRejected = false;
+        setSubmitEnabled(true);
+        showToast("Datos autocompletados con IA. Revísalos antes de publicar.", "bg-emerald-600");
       } catch (err) {
-        console.error("Falla en escaner IA:", err);
-        const errorMsg = err.message || "Error desconocido";
-        console.error("Detalle:", errorMsg);
-        showAIError("Escáner no disponible", `Error: ${errorMsg}. Completa los datos manualmente.`);
-        showToast("⚠️ IA falló: " + errorMsg, "bg-amber-600");
-        document.querySelector('#product-form button[type="submit"]').disabled = false;
-        document.querySelector('#product-form button[type="submit"]').classList.remove('opacity-50', 'cursor-not-allowed');
+        console.error("Falla en escáner IA:", err);
+        const msg = err.message || "Error desconocido";
+        showAIError("Escáner no disponible", `${msg}. Completa los datos manualmente.`);
+        setSubmitEnabled(true);
+      } finally {
+        isAnalyzing = false;
       }
     }
 
@@ -1131,69 +1126,71 @@
         showToast("Debes iniciar sesión para publicar", "bg-red-600");
         return;
       }
-
+      if (currentUserProfile.role !== 'merchant') {
+        showToast("Solo las cuentas de Comercio pueden publicar ofertas", "bg-amber-600");
+        return;
+      }
       if (!initSupabaseClient()) {
         showToast("Error de configuración de Supabase", "bg-red-600");
         return;
       }
-
-      const originalPrice = parseFloat(document.getElementById('p-original-price').value);
-      const discountPrice = parseFloat(document.getElementById('p-discount-price').value);
-
-      if (!document.getElementById('p-is-donation').checked && discountPrice > originalPrice) {
-        showToast("El precio de oferta no puede ser mayor al precio original", "bg-red-600");
+      if (productRejected) {
+        showToast("La IA rechazó este producto por seguridad alimentaria. Cambia las fotos o elimínalo.", "bg-red-600");
         return;
       }
 
-      // Guardar packaging_condition y packaging_type en hidden inputs cuando la IA lo devuelve
+      const isDonation = document.getElementById('p-is-donation').checked;
+      const title = document.getElementById('p-title').value.trim();
+      const originalPrice = parseFloat(document.getElementById('p-original-price').value);
+      const discountPrice = isDonation ? 0 : parseFloat(document.getElementById('p-discount-price').value);
+      const hours = parseInt(document.getElementById('p-expiration-hours').value, 10);
+
+      if (!title) { showToast("Escribe el título del producto", "bg-red-600"); return; }
+      if (!(originalPrice > 0)) { showToast("El precio original debe ser mayor a $0", "bg-red-600"); return; }
+      if (!isDonation) {
+        if (!(discountPrice >= 0.5)) { showToast("El precio de oferta debe ser de al menos $0.50 (mínimo de la pasarela de pago)", "bg-red-600"); return; }
+        if (discountPrice > originalPrice) { showToast("El precio de oferta no puede ser mayor al precio original", "bg-red-600"); return; }
+      }
+      if (!(hours >= 1 && hours <= 72)) { showToast("Las horas de expiración deben estar entre 1 y 72", "bg-red-600"); return; }
+
       const packagingCondition = document.getElementById('p-packaging-condition')?.value || 'NO ESPECIFICADO';
       const packagingType = document.getElementById('p-packaging-type')?.value || 'EMPAQUETADO';
+      const fallbackImg = "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=500&q=80";
+      const uploadedPaths = [];
 
       showLoading("Subiendo imágenes y guardando oferta...");
       try {
-        // Subir imágenes a Supabase Storage
         const imageUrls = [];
         for (let i = 0; i < compressedProductImages.length; i++) {
-          const base64 = compressedProductImages[i];
-          // Convertir base64 a blob
-          const blob = base64ToBlob(base64);
-          const mimeType = blob.type || 'image/jpeg';
-          const fileExt = mimeType.split('/')[1] || 'jpg';
-          const fileName = `${currentUserProfile.id}/${Date.now()}-${i}.${fileExt}`;
-          
+          const blob = base64ToBlob(compressedProductImages[i]);
+          const path = `${currentUserProfile.id}/${Date.now()}-${i}.jpg`;
           const { error: uploadError } = await supabaseClient.storage
             .from('product-images')
-            .upload(fileName, blob, { cacheControl: '3600', upsert: true });
-          
+            .upload(path, blob, { contentType: 'image/jpeg', cacheControl: '3600' });
           if (uploadError) throw uploadError;
-          
-          const { data: { publicUrl } } = supabaseClient.storage
-            .from('product-images')
-            .getPublicUrl(fileName);
-          
-          imageUrls.push(publicUrl);
+          uploadedPaths.push(path);
+          imageUrls.push(supabaseClient.storage.from('product-images').getPublicUrl(path).data.publicUrl);
         }
 
         const newProduct = {
           user_id: currentUserProfile.id,
-          title: document.getElementById('p-title').value,
+          title: title,
           original_price: originalPrice,
           discount_price: discountPrice,
           urgency: document.getElementById('p-urgency').value,
-          expiration_hours: parseInt(document.getElementById('p-expiration-hours').value) || 12,
-          urgency_tag: document.getElementById('p-urgency-tag').value || 'HOY',
-          is_donation: document.getElementById('p-is-donation').checked,
-          location_name: document.getElementById('p-location-name').value,
+          expiration_hours: hours,
+          urgency_tag: document.getElementById('p-urgency-tag').value.trim().slice(0, 40) || 'HOY',
+          is_donation: isDonation,
+          location_name: document.getElementById('p-location-name').value.trim(),
           lat: parseFloat(document.getElementById('p-lat').value) || null,
           lng: parseFloat(document.getElementById('p-lng').value) || null,
-          image_urls: imageUrls.length > 0 ? imageUrls : ["https://images.unsplash.com/photo-1509440159596-0249088772ff?w=500&q=80"],
-          image_url: imageUrls.length > 0 ? imageUrls[0] : "https://images.unsplash.com/photo-1509440159596-0249088772ff?w=500&q=80", // compatibilidad
+          image_urls: imageUrls.length > 0 ? imageUrls : [fallbackImg],
+          image_url: imageUrls.length > 0 ? imageUrls[0] : fallbackImg,
           packaging_condition: packagingCondition,
           packaging_type: packagingType,
           status: 'AVAILABLE'
         };
 
-        showLoading("Guardando en la base de datos...");
         const { error } = await supabaseClient.from('products').insert([newProduct]);
         if (error) throw error;
 
@@ -1202,7 +1199,12 @@
         resetProductForm();
         await loadProducts();
       } catch (err) {
-        showToast("Error al publicar: " + err.message, "bg-red-600");
+        // Si falló el insert, no dejar fotos huérfanas en Storage
+        if (uploadedPaths.length > 0) {
+          supabaseClient.storage.from('product-images').remove(uploadedPaths).catch(() => {});
+        }
+        const denied = err && (err.code === '42501' || /row-level security/i.test(err.message || ''));
+        showToast("Error al publicar: " + (denied ? "tu cuenta no tiene permiso (debe ser de tipo Comercio)." : (err.message || err)), "bg-red-600");
       } finally {
         hideLoading();
       }
@@ -1211,29 +1213,62 @@
     async function loadProducts() {
       try {
         if (initSupabaseClient()) {
-          const now = new Date().toISOString()
+          // RLS ya limita la consulta: ofertas vigentes + las propias + las que reservé
           const { data, error } = await supabaseClient
             .from('products')
             .select('*')
-            .eq('status', 'AVAILABLE')
             .order('created_at', { ascending: false })
-          if (!error && data) {
-            // Filtrar productos expirados en el cliente
-            productsList = data.filter(p => !p.expires_at || new Date(p.expires_at) > new Date())
-          }
+            .limit(300);
+          if (error) throw error;
+          productsList = data || [];
         }
-        renderProducts()
       } catch (err) {
-        console.error(err)
+        console.error('Error cargando productos:', err);
+        showToast("No se pudieron cargar las ofertas", "bg-amber-600");
       }
+      renderProducts();
     }
 
     function setupRealtime() {
-      if (!initSupabaseClient()) return;
-      supabaseClient
+      if (!initSupabaseClient() || realtimeChannel) return;
+      realtimeChannel = supabaseClient
         .channel('public:products')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => loadProducts())
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+          clearTimeout(realtimeTimer);
+          realtimeTimer = setTimeout(loadProducts, 500);   // agrupa ráfagas de eventos
+        })
         .subscribe();
+    }
+
+    // Botón de la pestaña "Mis Publicaciones" según el estado de la oferta
+    function mineActionButton(prod) {
+      const base = 'w-full text-xs font-bold py-2.5 rounded-xl border transition active:scale-95';
+      const id = escapeHtml(prod.id);
+      if (prod.status === 'RESERVED') {
+        return `<button onclick="event.stopPropagation(); markPickedUp('${id}')" class="${base} bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100">Marcar como recogido</button>`;
+      }
+      if (prod.status === 'SOLD') {
+        return `<div class="${base} bg-slate-100 text-slate-500 border-slate-200 text-center">Entregado</div>`;
+      }
+      if (prod.status === 'EXPIRED') {
+        return `<div class="${base} bg-slate-100 text-slate-500 border-slate-200 text-center">Vencida</div>`;
+      }
+      return `<button onclick="event.stopPropagation(); deleteProduct('${id}')" class="${base} bg-red-50 text-red-600 border-red-200 hover:bg-red-100">Eliminar Publicación</button>`;
+    }
+
+    async function markPickedUp(id) {
+      if (!confirm("¿Confirmas que el cliente ya recogió este producto?")) return;
+      showLoading("Actualizando...");
+      try {
+        const { error } = await supabaseClient.rpc('mark_product_picked_up', { p_id: String(id) });
+        if (error) throw error;
+        showToast("Entrega registrada", "bg-emerald-600");
+        await loadProducts();
+      } catch (err) {
+        showToast("Error: " + (err.message || err), "bg-red-600");
+      } finally {
+        hideLoading();
+      }
     }
 
     function renderInfoTab() {
@@ -1267,7 +1302,7 @@
                     <i class="fa-solid fa-store text-xl"></i>
                   </div>
                   <h5 class="font-bold text-slate-800">Comercio publica</h5>
-                  <p class="text-sm text-slate-500">El comercio toma foto del excedente. La IA analiza el producto, lee la fecha y sugiere precio óptimo.</p>
+                  <p class="text-sm text-slate-500">El comercio toma foto del excedente. La IA analiza el producto, estima su vigencia y sugiere un precio.</p>
                 </div>
               </div>
 
@@ -1278,8 +1313,8 @@
                   <div class="w-12 h-12 rounded-xl bg-sky-100 text-sky-600 flex items-center justify-center">
                     <i class="fa-solid fa-bell text-xl"></i>
                   </div>
-                  <h5 class="font-bold text-slate-800">Usuarios reciben alerta</h5>
-                  <p class="text-sm text-slate-500">Notificación push geolocalizada a usuarios cercanos. Ven la oferta en mapa y lista.</p>
+                  <h5 class="font-bold text-slate-800">Usuarios ven la oferta</h5>
+                  <p class="text-sm text-slate-500">La oferta aparece en tiempo real en la lista de todos los usuarios. Ábrela para ver su ubicación en el mapa.</p>
                 </div>
               </div>
 
@@ -1338,7 +1373,7 @@
                   <span>¿Los alimentos son seguros?</span>
                   <i class="fa-solid fa-chevron-down text-slate-400 group-open:rotate-180 transition-transform"></i>
                 </summary>
-                <p class="mt-3 text-sm text-slate-500">Sí. Solo se publican productos en <strong>Etapa Previa al Vencimiento</strong> (buen estado, seguros). La IA valida foto, fecha y empaque. Productos con riesgo sanitario son rechazados automáticamente.</p>
+                <p class="mt-3 text-sm text-slate-500">Solo se publican productos en <strong>Etapa Previa al Vencimiento</strong>. La IA revisa las fotos y rechaza productos con señales de riesgo sanitario (moho, descomposición), pero la responsabilidad final es del comercio: revisa siempre el producto al recogerlo.</p>
               </details>
               <details class="group p-4 border-b border-slate-100">
                 <summary class="flex items-center justify-between cursor-pointer font-medium text-slate-700">
@@ -1352,7 +1387,7 @@
                   <span>¿Qué pasa si no recojo a tiempo?</span>
                   <i class="fa-solid fa-chevron-down text-slate-400 group-open:rotate-180 transition-transform"></i>
                 </summary>
-                <p class="mt-3 text-sm text-slate-500">La reserva expira y el producto vuelve a estar disponible. El comercio define la ventana de recolección (horas de expiración).</p>
+                <p class="mt-3 text-sm text-slate-500">Cada oferta tiene una hora límite de recolección definida por el comercio. Reserva solo si puedes llegar a tiempo.</p>
               </details>
               <details class="group p-4">
                 <summary class="flex items-center justify-between cursor-pointer font-medium text-slate-700">
@@ -1373,7 +1408,7 @@
             <div class="grid grid-cols-3 gap-4 text-center">
               <div>
                 <p class="text-2xl font-extrabold text-emerald-600" id="stat-food">0 kg</p>
-                <p class="text-xs text-slate-500">Alimentos salvados</p>
+                <p class="text-xs text-slate-500">Alimentos salvados (estimado)</p>
               </div>
               <div>
                 <p class="text-2xl font-extrabold text-amber-600" id="stat-money">$0</p>
@@ -1381,7 +1416,7 @@
               </div>
               <div>
                 <p class="text-2xl font-extrabold text-sky-600" id="stat-co2">0 kg</p>
-                <p class="text-xs text-slate-500">CO₂ evitado</p>
+                <p class="text-xs text-slate-500">CO₂ evitado (estimado)</p>
               </div>
             </div>
           </div>
@@ -1449,17 +1484,17 @@
           <div class="bg-gradient-to-br from-emerald-600 to-teal-600 text-white rounded-3xl p-6 md:p-8">
             <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
               <div class="flex items-center gap-4">
-                <img src="${avatar}" class="w-20 h-20 rounded-full object-cover border-4 border-white/30" alt="${currentUserProfile.full_name}">
+                <img src="${escapeHtml(avatar)}" class="w-20 h-20 rounded-full object-cover border-4 border-white/30" alt="${escapeHtml(currentUserProfile.full_name)}">
                 <div>
-                  <h3 class="text-xl md:text-2xl font-extrabold">${currentUserProfile.full_name}</h3>
+                  <h3 class="text-xl md:text-2xl font-extrabold">${escapeHtml(currentUserProfile.full_name)}</h3>
                   <p class="text-emerald-100 flex items-center gap-2">
-                    <span class="bg-white/20 px-3 py-1 rounded-full text-xs font-bold">${roleLabels[currentUserProfile.role] || currentUserProfile.role}</span>
+                    <span class="bg-white/20 px-3 py-1 rounded-full text-xs font-bold">${escapeHtml(roleLabels[currentUserProfile.role] || currentUserProfile.role)}</span>
                   </p>
                 </div>
               </div>
               <div class="text-right">
                 <p class="text-emerald-100 text-sm">Miembro desde</p>
-                <p class="font-bold">${new Date(currentUserProfile.created_at).toLocaleDateString('es-ES', { year: 'numeric', month: 'long' })}</p>
+                <p class="font-bold">${currentUserProfile.created_at ? new Date(currentUserProfile.created_at).toLocaleDateString('es-ES', { year: 'numeric', month: 'long' }) : '—'}</p>
               </div>
             </div>
           </div>
@@ -1471,7 +1506,7 @@
                 <i class="fa-solid fa-seedling text-xl"></i>
               </div>
               <p class="text-2xl font-extrabold text-emerald-600" id="stat-food">0 kg</p>
-              <p class="text-xs text-slate-500">Alimentos salvados</p>
+              <p class="text-xs text-slate-500">Alimentos salvados (estimado)</p>
             </div>
             <div class="bg-white border border-slate-200 rounded-2xl p-5 text-center hover:border-amber-300 transition">
               <div class="w-12 h-12 rounded-xl bg-amber-100 text-amber-600 mx-auto mb-3 flex items-center justify-center">
@@ -1485,7 +1520,7 @@
                 <i class="fa-solid fa-leaf text-xl"></i>
               </div>
               <p class="text-2xl font-extrabold text-sky-600" id="stat-co2">0 kg</p>
-              <p class="text-xs text-slate-500">CO₂ evitado</p>
+              <p class="text-xs text-slate-500">CO₂ evitado (estimado)</p>
             </div>
           </div>
 
@@ -1564,7 +1599,7 @@
         container.innerHTML = data.map(p => `
           <div class="p-4 border-t border-slate-100 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div class="flex items-center gap-3">
-              <img src="${p.image_url || 'https://via.placeholder.com/60'}" class="w-14 h-14 rounded-xl object-cover">
+              <img src="${escapeHtml(safeImgUrl(p.image_url))}" class="w-14 h-14 rounded-xl object-cover">
               <div>
                 <p class="font-bold text-slate-800">${escapeHtml(p.title)}</p>
                 <p class="text-sm text-slate-500">${escapeHtml(p.location_name)}</p>
@@ -1631,7 +1666,7 @@
       let filtered = [];
       const now = new Date().toISOString()
       if (currentTab === 'explore') {
-        filtered = productsList.filter(p => p.status === 'AVAILABLE' && (!p.expires_at || p.expires_at > now));
+        filtered = productsList.filter(p => p.status === 'AVAILABLE' && !isExpired(p));
         // Aplicar filtro de donaciones para instituciones benéficas
         if (showOnlyDonations) {
           filtered = filtered.filter(p => p.is_donation === true);
@@ -1677,9 +1712,9 @@
         card.innerHTML = `
           <div>
             <div class="relative aspect-[4/3] bg-slate-100 overflow-hidden">
-              <img src="${prod.image_url || 'https://via.placeholder.com/400x300'}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
+              <img src="${escapeHtml(safeImgUrl(prod.image_url))}" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500">
               <div class="absolute top-3 left-3 flex flex-col gap-1.5 items-start">
-                <span class="bg-emerald-600/90 backdrop-blur-md text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-sm">${prod.urgency_tag || 'HOY'}</span>
+                <span class="bg-emerald-600/90 backdrop-blur-md text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-sm">${escapeHtml(prod.urgency_tag || 'HOY')}</span>
                 ${prod.is_donation ? `<span class="bg-purple-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">DONACIÓN</span>` : (discountPercent > 0 ? `<span class="bg-slate-900/90 text-amber-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full">-${discountPercent}% DTO</span>` : '')}
               </div>
               <span class="absolute top-3 right-3 text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-sm flex items-center gap-1 ${isSold ? 'bg-red-500 text-white' : 'bg-emerald-500 text-white'}">
@@ -1706,9 +1741,7 @@
                 ${isSold ? 'No Disponible' : 'Reserva Rápida'}
               </button>
             ` : `
-              <button onclick="event.stopPropagation(); deleteProduct('${prod.id}')" class="w-full text-xs font-bold py-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 transition active:scale-95">
-                Eliminar Publicación
-              </button>
+              ${mineActionButton(prod)}
             `}
           </div>
         `;
@@ -1728,27 +1761,26 @@
         openModal('auth-modal');
         return;
       }
-    
+      if (!initSupabaseClient() || reserving) return;
+
+      reserving = true;
       showLoading("Conectando con la pasarela de pago...");
-    
       try {
         const { data, error } = await supabaseClient.functions.invoke('create-checkout-session', {
-          body: { 
-            productId: prodId,
-            userId: currentUserProfile.id 
-          }
+          body: { productId: prodId, returnUrl: window.location.origin + window.location.pathname }
         });
-    
-        if (error) throw new Error(error.message || "Error al procesar la reserva.");
-    
-        if (data?.url) {
+        if (error) throw new Error(await extractFunctionError(error));
+        if (data && data.error) throw new Error(data.error);
+
+        if (data && data.url) {
           window.location.href = data.url;
-        } else {
-          throw new Error("No se obtuvo la URL de pago.");
+          return;
         }
+        throw new Error("No se obtuvo la URL de pago.");
       } catch (err) {
-        showToast("Error: " + err.message, "bg-red-600");
+        showToast("Error: " + (err.message || err), "bg-red-600");
       } finally {
+        reserving = false;
         hideLoading();
       }
     }
@@ -1761,7 +1793,7 @@
       if (!confirm("¿Seguro que deseas eliminar esta oferta?")) return;
       showLoading("Eliminando...");
       try {
-        const { error } = await supabaseClient.from('products').delete().eq('id', id);
+        const { error } = await supabaseClient.from('products').delete().eq('id', id).eq('status', 'AVAILABLE');
         if (error) throw error;
         showToast("Publicación eliminada", "bg-slate-900");
         await loadProducts();
@@ -1857,23 +1889,23 @@
     function openProductDetailModal(product) {
       const content = document.getElementById('product-detail-content');
       const discountPercent = product.original_price > 0 ? Math.round(((product.original_price - product.discount_price) / product.original_price) * 100) : 0;
-      const isAvailable = product.status === 'AVAILABLE';
+      const isAvailable = product.status === 'AVAILABLE' && !isExpired(product);
       const isDonation = product.is_donation === true;
-      const hoursLeft = product.expiration_hours || 0;
+      const hoursLeft = product.expires_at ? hoursUntil(product) : (product.expiration_hours || 0);
       const packagingCondition = product.packaging_condition || 'NO ESPECIFICADO';
       
       // Calcular hora límite de recolección
       const now = new Date();
-      const pickupDeadline = new Date(now.getTime() + hoursLeft * 60 * 60 * 1000);
+      const pickupDeadline = product.expires_at ? new Date(product.expires_at) : new Date(now.getTime() + hoursLeft * 60 * 60 * 1000);
       const deadlineStr = pickupDeadline.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
       
       const hasLocation = product.lat && product.lng;
       
       content.innerHTML = `
         <div class="relative aspect-[4/3] bg-slate-100 rounded-2xl overflow-hidden">
-          <img src="${product.image_url || 'https://via.placeholder.com/400x300'}" class="w-full h-full object-cover">
+          <img src="${escapeHtml(safeImgUrl(product.image_url))}" class="w-full h-full object-cover">
           <div class="absolute top-3 left-3 flex flex-col gap-1.5">
-            <span class="bg-emerald-600/90 backdrop-blur-md text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-sm">${product.urgency_tag || 'HOY'}</span>
+            <span class="bg-emerald-600/90 backdrop-blur-md text-white text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-sm">${escapeHtml(product.urgency_tag || 'HOY')}</span>
             ${isDonation ? `<span class="bg-purple-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full">DONACIÓN</span>` : (discountPercent > 0 ? `<span class="bg-slate-900/90 text-amber-300 text-[10px] font-extrabold px-2 py-0.5 rounded-full">-${discountPercent}% DTO</span>` : '')}
           </div>
           <span class="absolute top-3 right-3 text-[10px] font-extrabold px-2.5 py-1 rounded-full shadow-sm flex items-center gap-1 ${isAvailable ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'}">
@@ -1913,11 +1945,11 @@
             </div>
             <div class="flex items-center gap-2 text-sm">
               <i class="fa-solid fa-exclamation-triangle text-${product.urgency === 'ALTA' ? 'red' : product.urgency === 'MEDIA' ? 'amber' : 'emerald'}-600"></i>
-              <span class="font-medium text-slate-700">Urgencia: <span class="font-bold capitalize">${product.urgency?.toLowerCase() || 'media'}</span></span>
+              <span class="font-medium text-slate-700">Urgencia: <span class="font-bold capitalize">${escapeHtml(product.urgency?.toLowerCase() || 'media')}</span></span>
             </div>
             <div class="flex items-center gap-2 text-sm">
               <i class="fa-solid fa-box text-sky-600"></i>
-              <span class="font-medium text-slate-700">Empaque: <span class="font-bold capitalize">${packagingCondition.toLowerCase()}</span></span>
+              <span class="font-medium text-slate-700">Empaque: <span class="font-bold capitalize">${escapeHtml(packagingCondition.toLowerCase())}</span></span>
             </div>
           </div>
 
@@ -1967,13 +1999,18 @@
     }
 
     function openModal(id) { document.getElementById(id).classList.remove('hidden'); }
-    function closeModal(id) { 
+    function closeModal(id) {
       if (id === 'scan-modal' && modalMap) {
         modalMap.remove();
         modalMap = null;
         modalMarker = null;
       }
-      document.getElementById(id).classList.add('hidden'); 
+      if (id === 'product-detail-modal' && detailMap) {
+        detailMap.remove();
+        detailMap = null;
+        detailMarker = null;
+      }
+      document.getElementById(id).classList.add('hidden');
     }
     
     function showLoading(m) { 
@@ -1987,11 +2024,14 @@
       t.textContent = m;
       t.className = `fixed top-5 right-5 z-50 max-w-sm px-4 py-3 rounded-2xl shadow-xl text-xs font-bold text-white transition-all duration-300 flex items-center gap-2 ${c}`;
       t.classList.remove('hidden');
-      setTimeout(() => t.classList.add('hidden'), 3500);
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.classList.add('hidden'), 4000);
     }
 
     function resetProductForm() {
       document.getElementById('product-form').reset();
+      document.getElementById('p-discount-price').disabled = false;
+      productRejected = false;
       document.getElementById('preview-placeholder').classList.remove('hidden');
       document.getElementById('preview-grid').classList.add('hidden');
       document.getElementById('preview-grid').innerHTML = '';

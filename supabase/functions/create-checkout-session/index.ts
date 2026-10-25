@@ -1,188 +1,97 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import Stripe from "https://esm.sh/stripe@12.0.0?target=deno"
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
+import { corsHeaders, json, returnBase } from "../_shared/cors.ts"
+import { adminClient, getUserFromRequest } from "../_shared/auth.ts"
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') || '', {
   apiVersion: '2022-11-15',
   httpClient: Stripe.createFetchHttpClient(),
 })
 
-const ALLOWED_ORIGINS = (Deno.env.get('ALLOWED_ORIGINS') || 'http://localhost:8000,http://localhost:3000,http://127.0.0.1:5500').split(',')
+// Si es true, solo cuentas "charity" pueden reservar donaciones.
+const DONATIONS_ONLY_FOR_CHARITY = false
+const MIN_PRICE_CENTS = 50 // mínimo de Stripe en USD
 
-function getCorsHeaders(origin: string | null) {
-  const allowedOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : (Deno.env.get('ALLOWED_ORIGIN') || 'https://localhost:3000')
-  return {
-    'Access-Control-Allow-Origin': allowedOrigin,
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Credentials': 'true',
-  }
-}
-
-function createErrorResponse(message: string, status: number, origin: string | null) {
-  return new Response(
-    JSON.stringify({ error: message }),
-    { status, headers: { ...getCorsHeaders(origin), 'Content-Type': 'application/json' } }
-  )
-}
-
-function getCorsHeaders(origin: string | null) {
-  const allowedOrigin = origin && ALLOWED_ORIGINS.includes(origin) ? origin : (Deno.env.get('ALLOWED_ORIGIN') || 'https://localhost:3000')
-  return {
-    'Access-Control-Allow-Origin': allowedOrigin,
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Credentials': 'true',
-  }
+class UserError extends Error {
+  status: number
+  constructor(message: string, status = 400) { super(message); this.status = status }
 }
 
 serve(async (req) => {
-  const origin = req.headers.get('origin')
-  const corsHeaders = getCorsHeaders(origin)
-
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
-
-  // Validate Origin header
-  const originHeader = req.headers.get('origin')
-  if (!originHeader || !ALLOWED_ORIGINS.includes(originHeader)) {
-    return createErrorResponse('Origin not allowed', 403, originHeader)
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders(req) })
+  if (req.method !== 'POST') return json(req, { error: 'Método no permitido' }, 405)
 
   try {
-    // Create Supabase client with user's JWT for auth validation
-    const authHeader = req.headers.get('authorization')
-    if (!authHeader) {
-      return createErrorResponse('Missing authorization header', 401, originHeader)
+    const admin = adminClient()
+
+    // 1) Identidad: SIEMPRE del JWT, nunca del body
+    const user = await getUserFromRequest(req, admin)
+    if (!user) throw new UserError('Debes iniciar sesión para reservar.', 401)
+
+    const body = await req.json().catch(() => ({}))
+    const productId = typeof body.productId === 'string' ? body.productId : ''
+    if (!productId) throw new UserError('Falta el producto a reservar.')
+
+    // 2) Validar el producto
+    const { data: product } = await admin.from('products').select('*').eq('id', productId).maybeSingle()
+    if (!product) throw new UserError('La oferta no existe.', 404)
+    if (product.status !== 'AVAILABLE') throw new UserError('Esta oferta ya no está disponible.', 409)
+    if (product.expires_at && new Date(product.expires_at).getTime() <= Date.now()) {
+      throw new UserError('Esta oferta ya venció.', 409)
     }
+    if (product.user_id === user.id) throw new UserError('No puedes reservar tu propia oferta.')
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-      { global: { headers: { Authorization: authHeader } } }
-    )
+    const base = returnBase(req, body.returnUrl)
+    const sep = base.includes('?') ? '&' : '?'
 
-    // Get authenticated user from JWT
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return createErrorResponse('Invalid or expired token', 401, originHeader)
-    }
-
-    const { productId } = await req.json()
-    if (!productId) {
-      return createErrorResponse('Missing productId', 400, originHeader)
-    }
-
-    // Validate userId matches authenticated user (ignore body userId)
-    const body = await req.json()
-    const requestUserId = body.userId
-    if (requestUserId && requestUserId !== user.id) {
-      return createErrorResponse('User ID mismatch', 403, originHeader)
-    }
-
-    const supabaseAdmin = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
-
-    const { data: product, error: prodError } = await supabaseAdmin
-      .from('products')
-      .select('*')
-      .eq('id', productId)
-      .single()
-
-    if (prodError || !product) {
-      throw new Error("Producto no encontrado en la base de datos")
-    }
-
-    // Validate product is available and not expired
-    if (product.status !== 'AVAILABLE') {
-      throw new Error("El producto no está disponible para reserva")
-    }
-
-    if (product.expires_at && new Date(product.expires_at) < new Date()) {
-      throw new Error("El producto ha expirado")
-    }
-
-    // Validate minimum price for Stripe ($0.50 minimum)
-    const priceInCents = Math.round(Number(product.discount_price) * 100)
-    if (isNaN(priceInCents) || priceInCents < 50) {
-      throw new Error("El precio mínimo es $0.50")
-    }
-
-    // For donations, use atomic update with status check
+    // 3) Donación: reserva directa, atómica (solo si sigue AVAILABLE)
     if (product.is_donation === true) {
-      const { data, error: updError } = await supabaseAdmin
+      if (DONATIONS_ONLY_FOR_CHARITY) {
+        const { data: profile } = await admin.from('profiles').select('role').eq('id', user.id).maybeSingle()
+        if (profile?.role !== 'charity') throw new UserError('Las donaciones son solo para instituciones benéficas.', 403)
+      }
+      const { data: reserved, error } = await admin
         .from('products')
         .update({ status: 'RESERVED', reserved_by: user.id })
         .eq('id', productId)
         .eq('status', 'AVAILABLE')
         .select('id')
-        .single()
+      if (error) throw error
+      if (!reserved || reserved.length === 0) throw new UserError('Esta oferta ya no está disponible.', 409)
 
-      if (updError || !data) {
-        throw new Error("El producto ya no está disponible")
-      }
-
-      const redirectUrl = `${origin}/?status=success&product_id=${productId}&donation=true`
-      return new Response(
-        JSON.stringify({ url: redirectUrl, donation: true }),
-        { headers: { ...getCorsHeaders(originHeader), 'Content-Type': 'application/json' }, status: 200 }
-      )
+      return json(req, { donation: true, url: `${base}${sep}status=success&product_id=${productId}&donation=true` })
     }
 
-    // Validate minimum price for Stripe ($0.50 minimum)
+    // 4) Pago con Stripe. La reserva real la hace el webhook cuando el pago se confirma
+    //    (así un checkout abandonado no bloquea el producto).
     const priceInCents = Math.round(Number(product.discount_price) * 100)
-
-    if (isNaN(priceInCents) || priceInCents < 50) {
-      throw new Error("El precio mínimo es $0.50")
+    if (!Number.isFinite(priceInCents) || priceInCents < MIN_PRICE_CENTS) {
+      throw new UserError('El precio mínimo para pagar con tarjeta es $0.50.')
     }
 
-    // Create Stripe Checkout session with atomic reservation
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: {
-              name: product.title || 'Reserva de Oferta',
-              metadata: { product_id: productId }
-            },
-            unit_amount: priceInCents,
-          },
-          quantity: 1,
-        },
-      ],
       mode: 'payment',
-      success_url: `${origin}/?status=success&product_id=${productId}`,
-      cancel_url: `${origin}/?status=cancelled`,
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: String(product.title || 'Reserva de oferta').slice(0, 120) },
+          unit_amount: priceInCents,
+        },
+        quantity: 1,
+      }],
+      success_url: `${base}${sep}status=success&product_id=${productId}`,
+      cancel_url: `${base}${sep}status=cancelled`,
+      client_reference_id: user.id,
       metadata: { productId, userId: user.id },
-      payment_intent_data: {
-        metadata: { productId, userId: user.id }
-      }
+      payment_intent_data: { metadata: { productId, userId: user.id } },
+      expires_at: Math.floor(Date.now() / 1000) + 30 * 60,
     })
 
-    // Atomic reservation: mark as RESERVED only if still AVAILABLE
-    const { data: reserved, error: reserveError } = await supabaseAdmin
-      .from('products')
-      .update({ status: 'RESERVED', reserved_by: user.id })
-      .eq('id', productId)
-      .eq('status', 'AVAILABLE')
-      .select('id')
-      .single()
-
-    if (reserveError || !reserved) {
-      // If reservation failed, don't create Stripe session
-      throw new Error("El producto ya no está disponible")
-    }
-
-    return new Response(
-      JSON.stringify({ url: session.url }),
-      { headers: { ...getCorsHeaders(originHeader), 'Content-Type': 'application/json' }, status: 200 }
-    )
+    return json(req, { url: session.url })
   } catch (error) {
-    return createErrorResponse(error.message, 400, originHeader)
+    if (error instanceof UserError) return json(req, { error: error.message }, error.status)
+    console.error('create-checkout-session error:', error)
+    return json(req, { error: 'No se pudo iniciar el pago. Intenta de nuevo.' }, 500)
   }
 })

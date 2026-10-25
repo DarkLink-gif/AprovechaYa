@@ -1,183 +1,163 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
+import { corsHeaders, json } from "../_shared/cors.ts"
+import { adminClient, getUserFromRequest } from "../_shared/auth.ts"
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': Deno.env.get('ALLOWED_ORIGIN') || 'https://localhost:3000',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+const MODEL = Deno.env.get('GROQ_MODEL') || 'qwen/qwen3.8-27b'
+const MAX_IMAGES = 5
+const MAX_IMAGE_CHARS = 4_000_000
+const PACKAGING_TYPES = ['EMPAQUETADO', 'SIN_EMPAQUE']
+const CONDITIONS = ['BUENO', 'REGULAR', 'MALO']
+
+function parseGroqResponse(content: string): Record<string, unknown> | null {
+  // Algunos modelos razonadores devuelven <think>...</think> antes del JSON
+  const clean = content.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```json|```/g, '').trim()
+  try { return JSON.parse(clean) } catch (_) { /* se intenta extraer el objeto */ }
+  const match = clean.match(/\{[\s\S]*\}/)
+  if (match) {
+    try { return JSON.parse(match[0]) } catch (_) { return null }
+  }
+  return null
 }
 
-function parseGroqResponse(content) {
-  try {
-    return JSON.parse(content);
-  } catch {
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      try {
-        return JSON.parse(jsonMatch[0]);
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
+const oneOf = (v: unknown, allowed: string[], fallback: string) => {
+  const s = String(v ?? '').toUpperCase().trim()
+  return allowed.includes(s) ? s : fallback
+}
+const toBool = (v: unknown) => v === true || String(v).toLowerCase() === 'true'
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+function guessMime(b64: string): string {
+  if (b64.startsWith('iVBORw0KGgo')) return 'image/png'
+  if (b64.startsWith('UklGR')) return 'image/webp'
+  return 'image/jpeg'
 }
 
 serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders(req) })
+  if (req.method !== 'POST') return json(req, { error: 'Método no permitido' }, 405)
 
   try {
-    const body = await req.json()
-    const base64Images = body.base64Images || (body.base64Image ? [body.base64Image] : [])
+    // 1) Solo usuarios con sesión y cuenta de Comercio pueden gastar cuota de IA
+    const admin = adminClient()
+    const user = await getUserFromRequest(req, admin)
+    if (!user) return json(req, { error: 'Debes iniciar sesión.' }, 401)
+
+    const { data: profile } = await admin.from('profiles').select('role').eq('id', user.id).maybeSingle()
+    if (profile?.role !== 'merchant') {
+      return json(req, { error: 'Solo las cuentas de Comercio pueden analizar productos.' }, 403)
+    }
+
     const apiKey = Deno.env.get('GROQ_API_KEY')
-
-    console.log("=== scan-product START ===");
-    console.log("Number of images:", base64Images.length);
-    console.log("GROQ_API_KEY exists:", !!apiKey);
-
     if (!apiKey) {
-      console.error("ERROR: GROQ_API_KEY no configurada");
-      return new Response(
-        JSON.stringify({ error: "La API Key 'GROQ_API_KEY' no está configurada en los Secretos de Supabase." }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      console.error('GROQ_API_KEY no configurada')
+      return json(req, { error: 'El servicio de IA no está configurado.' }, 500)
     }
 
-    if (base64Images.length === 0) {
-      return new Response(
-        JSON.stringify({ error: "No se proporcionaron imágenes" }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
+    // 2) Validar imágenes
+    const body = await req.json().catch(() => ({}))
+    const raw: unknown[] = Array.isArray(body.base64Images) ? body.base64Images : (body.base64Image ? [body.base64Image] : [])
+    if (raw.length === 0) return json(req, { error: 'No se proporcionaron imágenes.' }, 400)
+    if (raw.length > MAX_IMAGES) return json(req, { error: `Máximo ${MAX_IMAGES} imágenes.` }, 400)
 
-    if (base64Images.length > 5) {
-      return new Response(
-        JSON.stringify({ error: "Máximo 5 imágenes permitidas" }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
-
-    const imageUrls = base64Images.map(base64Image => {
-      let imageUrl = base64Image;
-      if (base64Image && !base64Image.startsWith('data:')) {
-        let mimeType = 'image/jpeg';
-        if (base64Image.startsWith('iVBORw0KGgo')) mimeType = 'image/png';
-        else if (base64Image.startsWith('UklGR')) mimeType = 'image/webp';
-        imageUrl = `data:${mimeType};base64,${base64Image}`;
+    const imageUrls: string[] = []
+    for (const item of raw) {
+      if (typeof item !== 'string' || item.length === 0 || item.length > MAX_IMAGE_CHARS) {
+        return json(req, { error: 'Imagen inválida o demasiado grande.' }, 400)
       }
-      return imageUrl;
-    });
+      imageUrls.push(item.startsWith('data:image/') ? item : `data:${guessMime(item)};base64,${item}`)
+    }
 
-    const prompt = `Analiza las imágenes de este producto alimenticio. Evalúa:
-1. Nombre del producto (product_name)
-2. Horas estimadas hasta vencimiento (expiration_hours, número)
-3. Precio sugerido con descuento en USD (suggested_price, número)
-4. Urgencia: "ALTA" (vence en <6h), "MEDIA" (6-24h), "BAJA" (>24h)
-5. Tipo de empaque: "EMPAQUETADO", "SIN_EMPAQUE" (frutas/verduras sueltas, panadería sin bolsa, granel, etc.)
-6. Condición: "BUENO", "REGULAR", "MALO" (evalúa el estado del PRODUCTO, no del empaque si no tiene)
-7. Riesgo sanitario: true/false (moho, descomposición, signos de putrefacción, olor visible, plagas)
+    const now = new Date().toISOString()
+    const prompt = `Fecha y hora actual (UTC): ${now}.
+Analiza las imágenes de este producto alimenticio y responde SOLO con un objeto JSON válido (sin markdown, sin texto extra) con estas claves:
+- product_name: nombre corto del producto (string)
+- expiration_hours: horas hasta el vencimiento (número entero). Si ves una fecha de vencimiento impresa, calcula las horas desde la fecha actual. Si no hay fecha visible, estima por tipo de producto y estado.
+- original_price: precio normal estimado en USD, sin descuento (número)
+- suggested_price: precio sugerido con descuento en USD (número, menor que original_price)
+- packaging_type: "EMPAQUETADO" o "SIN_EMPAQUE" (frutas/verduras sueltas, pan suelto, granel)
+- packaging_condition: "BUENO", "REGULAR" o "MALO" (estado del PRODUCTO si no tiene empaque)
+- safety_risk: true/false
 
-REGLAS CLAVE:
-- Si el producto NO TIENE EMPAQUE (frutas, verduras, pan suelto, granel): packaging_type = "SIN_EMPAQUE" y evalúa condición del PRODUCTO en sí.
-- SOLO safety_risk = true si hay: moho visible, descomposición/putrefacción, líquidos sospechosos, plagas, olor visible a podrido.
-- Un producto sin empaque pero FRESCO (manzana sana, pan fresco, verduras crujientes) NO es riesgo sanitario.
-- Empaque roto/sucio SOLO es riesgo si expone el alimento a contaminación visible.
+REGLAS:
+- safety_risk = true SOLO si hay moho visible, descomposición/putrefacción, líquidos sospechosos, plagas o empaque que exponga el alimento a contaminación visible.
+- Un producto sin empaque pero fresco NO es riesgo sanitario.
+- Si no estás seguro del precio, usa una estimación razonable para El Salvador en USD.`
 
-Devuelve ÚNICAMENTE un objeto JSON válido con: product_name, expiration_hours, suggested_price, urgency, packaging_type, packaging_condition, safety_risk (boolean). Sin markdown, sin texto extra.`;
-
-    console.log("Calling Groq API with", imageUrls.length, "images...");
-    const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "qwen/qwen3.8-27b",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              ...imageUrls.map(url => ({ type: "image_url", image_url: { url } }))
-            ]
-          }
+    const payload: Record<string, unknown> = {
+      model: MODEL,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          ...imageUrls.map((url) => ({ type: 'image_url', image_url: { url } })),
         ],
-        temperature: 0.1,
-        max_tokens: 300
-      })
-    })
+      }],
+      temperature: 0.1,
+      max_tokens: 1000,
+    }
+    const effort = Deno.env.get('GROQ_REASONING_EFFORT')
+    if (effort) payload.reasoning_effort = effort
 
-    console.log("Groq response status:", groqResponse.status);
-    const groqData = await groqResponse.json()
-    console.log("Groq response data:", JSON.stringify(groqData).substring(0, 500));
+    // 3) Llamar a Groq
+    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(25000),
+    })
+    const groqData = await groqResponse.json().catch(() => ({}))
 
     if (!groqResponse.ok) {
-      console.error("Groq API error:", groqData);
-      return new Response(
-        JSON.stringify({ error: groqData.error?.message || "Error al comunicarse con la API de Groq", groqStatus: groqResponse.status }),
-        { status: groqResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      console.error('Groq API error:', groqResponse.status, JSON.stringify(groqData).slice(0, 500))
+      const status = groqResponse.status === 429 ? 429 : 502
+      return json(req, { error: groqResponse.status === 429
+        ? 'La IA está saturada. Intenta de nuevo en unos segundos.'
+        : 'La IA no pudo procesar la solicitud. Intenta de nuevo.' }, status)
     }
 
-    const content = groqData.choices?.[0]?.message?.content;
-    console.log("Groq content:", content);
+    const content: string | undefined = groqData.choices?.[0]?.message?.content
     if (!content) {
-      return new Response(
-        JSON.stringify({ error: "Respuesta vacía de Groq" }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      console.error('Respuesta vacía de Groq:', JSON.stringify(groqData).slice(0, 500))
+      return json(req, { error: 'La IA devolvió una respuesta vacía.' }, 502)
     }
 
-    const parsed = parseGroqResponse(content);
-    console.log("Parsed result:", parsed);
+    const parsed = parseGroqResponse(content)
     if (!parsed) {
-      return new Response(
-        JSON.stringify({ error: "No se pudo parsear la respuesta de la IA", rawContent: content }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
+      console.error('No se pudo parsear la respuesta de IA:', content.slice(0, 300))
+      return json(req, { error: 'No se pudo interpretar la respuesta de la IA.' }, 502)
     }
 
-    const required = ['product_name', 'expiration_hours', 'suggested_price', 'urgency', 'packaging_type', 'packaging_condition', 'safety_risk'];
-    for (const field of required) {
-      if (!(field in parsed)) {
-        console.error("Missing field:", field, "in parsed:", parsed);
-        return new Response(
-          JSON.stringify({ error: `Campo faltante en respuesta IA: ${field}`, parsed }),
-          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        )
-      }
+    const packagingType = oneOf(parsed.packaging_type, PACKAGING_TYPES, 'EMPAQUETADO')
+    const packagingCondition = oneOf(parsed.packaging_condition, CONDITIONS, 'REGULAR')
+
+    // 4) Rechazo por seguridad alimentaria (respuesta 200 con rejected=true)
+    if (toBool(parsed.safety_risk)) {
+      return json(req, {
+        rejected: true,
+        error: 'PRODUCTO_NO_APTO',
+        message: 'El producto presenta riesgos para la salud (moho, descomposición o contaminación). No puede publicarse.',
+        packaging_type: packagingType,
+        packaging_condition: packagingCondition,
+      })
     }
 
-    if (parsed.safety_risk === true) {
-      return new Response(
-        JSON.stringify({ 
-          error: "PRODUCTO_NO_APTO",
-          message: "El producto presenta riesgos para la salud (moho, descomposición, signos de putrefacción). No puede publicarse.",
-          safety_risk: true,
-          packaging_type: parsed.packaging_type,
-          packaging_condition: parsed.packaging_condition
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      )
-    }
+    // 5) Normalizar y validar lo que devuelve la IA
+    const hours = Math.min(72, Math.max(1, Math.round(Number(parsed.expiration_hours)) || 12))
+    const suggested = round2(Math.min(1000, Math.max(0.5, Number(parsed.suggested_price) || 0.5)))
+    let original = Number(parsed.original_price)
+    if (!(original > suggested) || original > 5000) original = round2(suggested * 1.5)
 
-    return new Response(
-      JSON.stringify({
-        product_name: parsed.product_name,
-        expiration_hours: Number(parsed.expiration_hours) || 12,
-        suggested_price: Number(parsed.suggested_price) || 0,
-        urgency: parsed.urgency || 'MEDIA',
-        packaging_type: parsed.packaging_type || 'EMPAQUETADO',
-        packaging_condition: parsed.packaging_condition
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 200 }
-    )
+    return json(req, {
+      product_name: String(parsed.product_name ?? '').trim().slice(0, 120) || 'Producto',
+      expiration_hours: hours,
+      original_price: round2(original),
+      suggested_price: suggested,
+      urgency: hours < 6 ? 'ALTA' : hours <= 24 ? 'MEDIA' : 'BAJA',
+      packaging_type: packagingType,
+      packaging_condition: packagingCondition,
+    })
   } catch (error) {
-    console.error("scan-product catch error:", error);
-    return new Response(
-      JSON.stringify({ error: error.message, stack: error.stack }),
-      { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    )
+    console.error('scan-product error:', error)
+    return json(req, { error: 'Error interno del escáner.' }, 500)
   }
 })
