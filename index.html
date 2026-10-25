@@ -129,7 +129,7 @@
   </header>
 
   <!-- NOTIFICACIÓN TOAST -->
-  <div id="toast" class="hidden fixed top-5 right-5 z-50 max-w-sm px-4 py-3 rounded-2xl shadow-xl text-xs font-bold text-white transition-all duration-300 flex items-center gap-2"></div>
+  <div id="toast" class="hidden fixed top-5 right-5 z-60 max-w-sm px-4 py-3 rounded-2xl shadow-xl text-xs font-bold text-white transition-all duration-300 flex items-center gap-2"></div>
 
   <!-- ================================================================= -->
   <!-- 3. CONTENIDO PRINCIPAL                                           -->
@@ -2022,7 +2022,7 @@
     function showToast(m, c) {
       const t = document.getElementById('toast');
       t.textContent = m;
-      t.className = `fixed top-5 right-5 z-50 max-w-sm px-4 py-3 rounded-2xl shadow-xl text-xs font-bold text-white transition-all duration-300 flex items-center gap-2 ${c}`;
+      t.className = `fixed top-5 right-5 z-60 max-w-sm px-4 py-3 rounded-2xl shadow-xl text-xs font-bold text-white transition-all duration-300 flex items-center gap-2 ${c}`;
       t.classList.remove('hidden');
       clearTimeout(toastTimer);
       toastTimer = setTimeout(() => t.classList.add('hidden'), 4000);
